@@ -9,6 +9,8 @@ jobs:
       - uses: actions/setup-go@v4
         with:
           go-version: 1.21.0
+      - shell: bash
+        run: go env
       - uses: conda-incubator/setup-miniconda@v2
         with:
           auto-update-conda: true
