@@ -1,0 +1,40 @@
+name: build-win
+on:
+  push:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3.5.3
+      - uses: actions/setup-go@v4
+        with:
+          go-version: 1.21.0
+      - uses: conda-incubator/setup-miniconda@v2
+        with:
+          auto-update-conda: true
+          python-version: 3.11
+      - run: conda info
+        shell: bash -el {0}
+      - run: |
+          conda install -y -c conda-forge \
+            gtk3==3.24.38
+        shell: bash -el {0}
+      - run: conda list
+        shell: bash -el {0}
+      - run: ls C:/Miniconda/envs/test
+      - run: ls C:/Miniconda/envs/test/Library
+      - run: ls C:/Miniconda/envs/test/Library/bin
+      - run: ls C:/Miniconda/envs/test/Library/lib
+      - run: ls C:/Miniconda/envs/test/Library/include
+      - shell: bash
+        run: |
+          go build -o phaselimiter_gui.exe
+      - shell: bash
+        run: |
+          mkdir -p D:/results
+          cp phaselimiter_gui.exe D:/results
+      - uses: actions/upload-artifact@v3
+        with:
+          name: build-results
+          path: D:/results
+
