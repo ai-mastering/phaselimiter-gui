@@ -18,6 +18,12 @@ jobs:
       - run: mv phaselimiter-gui.exe /tmp/results
       - run: mv phaselimiter-gui-console.exe /tmp/results
       - run: cp /usr/x86_64-w64-mingw32/sys-root/mingw/bin/*.dll /tmp/results
+      - name: remove gpl dlls
+        run: |
+          cd /tmp/results
+          rm libgettext*
+          rm libtermcap*
+          rm libtextstyle*
       - run: mv licenses /tmp/results
       - uses: actions/upload-artifact@v3
         with:

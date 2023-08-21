@@ -18,12 +18,12 @@ icuuc73.dll
 MIT and UCD and Public Domain
 
 https://packages.fedoraproject.org/pkgs/mingw-gettext/mingw64-gettext/
-mingw64(libasprintf-0.dll)
-mingw64(libgettextlib-0-22.dll)
-mingw64(libgettextpo-0.dll)
-mingw64(libgettextsrc-0-22.dll)
-mingw64(libintl-8.dll)
-mingw64(libtextstyle-0.dll)
+mingw64(libasprintf-0.dll) LGPL
+mingw64(libgettextlib-0-22.dll) GPL?
+mingw64(libgettextpo-0.dll) GPL
+mingw64(libgettextsrc-0-22.dll) GPL?
+mingw64(libintl-8.dll) LGPL
+mingw64(libtextstyle-0.dll) GPL
 GPLv2+ and LGPLv2+
 
 https://fedora.pkgs.org/rawhide/fedora-x86_64/mingw64-atk-2.38.0-4.fc39.noarch.rpm.html
