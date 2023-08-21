@@ -1,0 +1,4 @@
+https://www.cairographics.org/
+
+Mozilla Public License (MPL) version 1.1
+https://www.mozilla.org/media/MPL/1.1/index.0c5913925d40.txt
