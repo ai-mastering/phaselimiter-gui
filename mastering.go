@@ -46,6 +46,7 @@ func (m Mastering) execute(update chan Mastering) {
 		"--sound_quality2_cache", m.SoundQuality2Cache,
 	}
 	cmd := exec.Command(m.PhaselimiterPath, args...)
+	CmdHideWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		m.Status = MasteringStatusFailed
