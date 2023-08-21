@@ -2,23 +2,23 @@ package main
 
 import (
 	"bufio"
-	"io"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
 )
 
-type MasteringStatus int
+type MasteringStatus string
 
 const (
-	MasteringStatusWaiting MasteringStatus = iota
-	MasteringStatusProcessing
-	MasteringStatusFailed
-	MasteringStatusSucceeded
+	MasteringStatusWaiting    = MasteringStatus("waiting")
+	MasteringStatusProcessing = MasteringStatus("processing")
+	MasteringStatusFailed     = MasteringStatus("failed")
+	MasteringStatusSucceeded  = MasteringStatus("succeeded")
 )
 
 type Mastering struct {
-	id                 int
+	Id                 int
 	Input              string
 	Output             string
 	Ffmpeg             string
@@ -54,13 +54,7 @@ func (m Mastering) execute(update chan Mastering) {
 		update <- m
 		return
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		m.Status = MasteringStatusFailed
-		m.Message = "failed to create stderr pipe: " + err.Error()
-		update <- m
-		return
-	}
+	cmd.Stderr = cmd.Stdout
 
 	m.Status = MasteringStatusProcessing
 	update <- m
@@ -73,13 +67,13 @@ func (m Mastering) execute(update chan Mastering) {
 		return
 	}
 
-	merged := io.MultiReader(stderr, stdout)
-	scanner := bufio.NewScanner(merged)
+	scanner := bufio.NewScanner(stdout)
 	r := regexp.MustCompile("progression: ([-+]?[0-9]*\\.?[0-9]+)")
-	output := ""
+	//output := ""
 	for scanner.Scan() {
 		line := scanner.Text()
-		output += line
+		fmt.Println(line)
+		// output += line
 		matches := r.FindStringSubmatch(line)
 		if len(matches) > 0 {
 			m.Progression, _ = strconv.ParseFloat(matches[1], 64)
@@ -90,7 +84,7 @@ func (m Mastering) execute(update chan Mastering) {
 	err = cmd.Wait()
 	if err != nil {
 		m.Status = MasteringStatusFailed
-		m.Message = "command failed: " + err.Error() + " output: " + output
+		m.Message = "command failed: " + err.Error() // + " output: " + output
 		update <- m
 		return
 	}

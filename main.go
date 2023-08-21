@@ -11,12 +11,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
 const (
-	COLUMN_INPUT = iota
+	COLUMN_ID = iota
+	COLUMN_INPUT
 	COLUMN_OUTPUT
+	COLUMN_STATUS
 )
 
 func getExecDir() string {
@@ -50,6 +53,15 @@ func createTreeViewColumn(title string, order int) *gtk.TreeViewColumn {
 	tvc, _ := gtk.TreeViewColumnNewWithAttribute(
 		title, renderer, "text", order)
 	return tvc
+}
+
+func updateListItem(model *gtk.ListStore, iter *gtk.TreeIter, m Mastering) {
+	status := string(m.Status)
+	if m.Status == MasteringStatusProcessing {
+		status = strconv.FormatFloat(m.Progression*100, 'f', 0, 64) + "%"
+	}
+	model.Set(iter, []int{COLUMN_ID, COLUMN_INPUT, COLUMN_OUTPUT, COLUMN_STATUS},
+		[]interface{}{m.Id, m.Input, m.Output, status})
 }
 
 func main() {
@@ -102,11 +114,13 @@ Notes
 - No internet access`)
 	box.Add(notes)
 
-	ls, err := gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING)
+	ls, err := gtk.ListStoreNew(glib.TYPE_INT, glib.TYPE_STRING,
+		glib.TYPE_STRING, glib.TYPE_STRING)
 
 	tv, err := gtk.TreeViewNewWithModel(ls)
 	tv.AppendColumn(createTreeViewColumn("input file", COLUMN_INPUT))
 	tv.AppendColumn(createTreeViewColumn("output file", COLUMN_OUTPUT))
+	tv.AppendColumn(createTreeViewColumn("status", COLUMN_STATUS))
 	box.Add(tv)
 
 	var destInData = func(lbi *gtk.Window,
@@ -126,7 +140,8 @@ Notes
 			}
 
 			m := Mastering{}
-			m.id = masteringId
+			m.Status = MasteringStatusWaiting
+			m.Id = masteringId
 			masteringId += 1
 			m.Ffmpeg = "ffmpeg"
 			m.PhaselimiterPath = filepath.Join(getExecDir(), "phaselimiter/bin/phase_limiter")
@@ -147,8 +162,8 @@ Notes
 
 			masteringRunner.Add(m)
 
-			iter := ls.Append()
-			ls.Set(iter, []int{COLUMN_INPUT, COLUMN_OUTPUT}, []interface{}{m.Input, m.Output})
+			iter := ls.Insert(0)
+			updateListItem(ls, iter, m)
 		}
 	}
 	win.Connect("drag-data-received", destInData)
@@ -157,6 +172,23 @@ Notes
 		for {
 			m := <-masteringRunner.MasteringUpdate
 			fmt.Printf("%#v\n", m)
+
+			glib.IdleAdd(func() {
+				iter, _ := ls.GetIterFirst()
+				if iter == nil {
+					return
+				}
+				for {
+					v, _ := ls.GetValue(iter, COLUMN_ID)
+					id, _ := v.GoValue()
+					if m.Id == id {
+						updateListItem(ls, iter, m)
+					}
+					if ls.IterNext(iter) == false {
+						break
+					}
+				}
+			})
 		}
 	}()
 
