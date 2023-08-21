@@ -91,17 +91,26 @@ func main() {
 	box, err := gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0)
 	win.Add(box)
 
-	entry_label, err := gtk.LabelNew("Output directory")
-	box.Add(entry_label)
+	entryLabel, err := gtk.LabelNew("Output directory")
+	box.Add(entryLabel)
 	entry, err := gtk.EntryNew()
 	entry.SetText(getDefaultOutputDir())
 	box.Add(entry)
 
-	//mastering_scale_label, err := gtk.LabelNew("Mastering intensity")
-	//box.Add(mastering_scale_label)
-	//mastering_scale, err := gtk.ScaleNew(gtk.ORIENTATION_HORIZONTAL)
-	//mastering_scale.SetRange(0, 1)
-	//box.Add(mastering_scale)
+	loudnessLabel, err := gtk.LabelNew("Target loudness")
+	box.Add(loudnessLabel)
+	loudness, err := gtk.SpinButtonNewWithRange(-20, 0.0, 0.01)
+	loudness.SetValue(-9)
+	box.Add(loudness)
+
+	masteringLevelLabel, err := gtk.LabelNew("Mastering intensity")
+	box.Add(masteringLevelLabel)
+	masteringLevel, err := gtk.SpinButtonNewWithRange(0.0, 1.0, 0.01)
+	masteringLevel.SetValue(1)
+	box.Add(masteringLevel)
+
+	bassPreservation, err := gtk.CheckButtonNewWithLabel("Preserve bass")
+	box.Add(bassPreservation)
 
 	notes, err := gtk.LabelNew(`Drop audio files.
 
@@ -158,7 +167,9 @@ Notes
 			m.Output += "_output.wav"
 			m.Output = filepath.Join(outputDir, m.Output)
 
-			//m.Level = mastering_scale.GetFillLevel()
+			m.Loudness = loudness.GetValue()
+			m.Level = masteringLevel.GetValue()
+			m.BassPreservation = bassPreservation.GetActive()
 
 			masteringRunner.Add(m)
 

@@ -24,10 +24,12 @@ type Mastering struct {
 	Ffmpeg             string
 	PhaselimiterPath   string
 	SoundQuality2Cache string
-	//Level              float64
-	Progression float64
-	Status      MasteringStatus
-	Message     string
+	Loudness           float64
+	Level              float64
+	BassPreservation   bool
+	Progression        float64
+	Status             MasteringStatus
+	Message            string
 }
 
 type MasteringRunner struct {
@@ -37,6 +39,16 @@ type MasteringRunner struct {
 }
 
 func (m Mastering) execute(update chan Mastering) {
+	formatFloat := func(x float64) string {
+		return strconv.FormatFloat(x, 'f', 7, 64)
+	}
+	formatBool := func(x bool) string {
+		if x {
+			return "true"
+		}
+		return "false"
+	}
+
 	args := []string{
 		"--input", m.Input,
 		"--output", m.Output,
@@ -44,6 +56,11 @@ func (m Mastering) execute(update chan Mastering) {
 		"--mastering", "true",
 		"--mastering_mode", "mastering5",
 		"--sound_quality2_cache", m.SoundQuality2Cache,
+		"--mastering_matching_level", formatFloat(m.Level),
+		"--mastering_ms_matching_level", formatFloat(m.Level),
+		"--mastering5_mastering_level", formatFloat(m.Level),
+		"--erb_eval_func_weighting", formatBool(m.BassPreservation),
+		"--reference", formatFloat(m.Loudness),
 	}
 	cmd := exec.Command(m.PhaselimiterPath, args...)
 	CmdHideWindow(cmd)
