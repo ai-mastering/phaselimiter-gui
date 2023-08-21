@@ -3,40 +3,26 @@ on:
   push:
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:39
     steps:
       - uses: actions/checkout@v3.5.3
-      - uses: actions/setup-go@v4
-        with:
-          go-version: 1.21.0
-      - shell: bash
-        run: go env
-      - uses: conda-incubator/setup-miniconda@v2
-        with:
-          auto-update-conda: true
-          python-version: 3.11
-      - run: conda info
-        shell: bash -el {0}
-      - run: |
-          conda install -y -c conda-forge \
-            gtk3==3.24.38
-        shell: bash -el {0}
-      - run: conda list
-        shell: bash -el {0}
-      - run: ls C:/Miniconda/envs/test
-      - run: ls C:/Miniconda/envs/test/Library
-      - run: ls C:/Miniconda/envs/test/Library/bin
-      - run: ls C:/Miniconda/envs/test/Library/lib
-      - run: ls C:/Miniconda/envs/test/Library/include
-      - shell: bash
-        run: |
-          go build -o phaselimiter_gui.exe
-      - shell: bash
-        run: |
-          mkdir -p D:/results
-          cp phaselimiter_gui.exe D:/results
+      # https://github.com/gotk3/gotk3/wiki/Cross-Compiling#using-docker
+      - run: yum install -y mingw64-gtk3 go glib2-devel mingw64-gcc.x86_64
+      - run: bash -c "sed -i -e 's/-Wl,-luuid/-luuid/g' /usr/x86_64-w64-mingw32/sys-root/mingw/lib/pkgconfig/gdk-3.0.pc"
+      # cd
+      # mkdir go
+      # cd go
+      # mkdir src pkg bin
+      # cd src
+      - run: PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/sys-root/mingw/lib/pkgconfig CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go install -v github.com/gotk3/gotk3/gtk
+      - run: CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go build -ldflags -H=windowsgui
+      - run: mkdir -p /tmp/results
+      - run: mv phaselimiter-gui.exe /tmp/results
+      - run: cp /usr/x86_64-w64-mingw32/sys-root/mingw/bin/*.dll /tmp/results
       - uses: actions/upload-artifact@v3
         with:
           name: build-results
-          path: D:/results
+          path: /tmp/results
 
