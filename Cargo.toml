@@ -1,0 +1,22 @@
+[package]
+name = "phaselimiter-gui"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "Portable desktop frontend for the phaselimiter mastering engine"
+
+[dependencies]
+iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "x11", "wayland", "tokio"] }
+tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros"] }
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+iced_test = "=0.14.0"
+
+[profile.release]
+strip = "debuginfo"
+

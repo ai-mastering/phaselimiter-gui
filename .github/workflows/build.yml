@@ -1,0 +1,61 @@
+name: build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux windowing and GUI test tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev xvfb xauth python3-xlib
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: rustup show
+      - name: Format
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Real X11 file drop
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python3 script/test-x11-drop.py target/${{ matrix.target }}/release/phaselimiter-gui
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        run: python3 script/package-macos.py ${{ matrix.target }}
+      - name: Package Windows application
+        if: runner.os == 'Windows'
+        run: python script/package-windows.py
+      - name: Inspect Windows DLL imports
+        if: runner.os == 'Windows'
+        run: python script/analyze-windows.py target/${{ matrix.target }}/release/phaselimiter-gui.exe --check-no-vc-runtime
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phaselimiter-gui-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/phaselimiter-gui
+            target/${{ matrix.target }}/release/phaselimiter-gui.exe
+            dist/${{ matrix.target }}/Phaselimiter-macos.zip
+            dist/${{ matrix.target }}/Phaselimiter-windows-x86_64.zip
+          if-no-files-found: error

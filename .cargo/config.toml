@@ -1,0 +1,3 @@
+[target.x86_64-pc-windows-msvc]
+# Keep the GUI independent of a separately installed Visual C++ runtime.
+rustflags = ["-C", "target-feature=+crt-static"]

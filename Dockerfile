@@ -16,3 +16,20 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gdb jq procps ripgrep tmux \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://chatgpt.com/codex/install.sh | sh
+
+# Rust GUI development. No macOS SDK is downloaded; provide your own SDKROOT
+# when cross-building. The backend's DSP dependencies are separate.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+        libwayland-dev xvfb xauth python3-xlib python3-venv lld \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh \
+    && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.99.1 \
+    && rm /tmp/rustup-init.sh
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup component add rustfmt clippy
+RUN ln -s /usr/bin/clang /usr/local/bin/clang-cl \
+    && python3 -m venv /opt/phaselimiter-cross \
+    && /opt/phaselimiter-cross/bin/pip install cargo-xwin==0.23.1
+ENV PATH="/opt/phaselimiter-cross/bin:${PATH}"

@@ -28,3 +28,11 @@ go.work
 
 /phaselimiter-gui
 /phaselimiter
+
+# Rust build products, portable bundles and local Apple SDKs
+/target/
+/dist/
+/.local-sdk/
+__pycache__/
+
+.DS_Store
