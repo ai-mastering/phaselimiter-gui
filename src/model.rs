@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Format {
     Wav,
     Mp3,
@@ -22,7 +23,7 @@ impl std::fmt::Display for Format {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Solver {
     DePrmm,
     Cmaes,
@@ -45,8 +46,10 @@ impl std::fmt::Display for Solver {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
+    pub reference: String,
     pub backend: String,
     pub ffmpeg: String,
     pub cache: String,
@@ -96,6 +99,7 @@ impl Default for Settings {
         };
         let bundled_ffmpeg = root.join(ffmpeg);
         Self {
+            reference: String::new(),
             backend: root
                 .join("phaselimiter/bin")
                 .join(tool)
@@ -128,8 +132,10 @@ impl Default for Settings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub reference: Option<PathBuf>,
     pub backend: PathBuf,
     pub ffmpeg: String,
     pub cache: PathBuf,
@@ -189,6 +195,7 @@ impl Settings {
             return Err("Evaluation budget must be positive.".into());
         }
         Ok(Config {
+            reference: (!self.reference.is_empty()).then(|| PathBuf::from(&self.reference)),
             backend: PathBuf::from(&self.backend),
             ffmpeg: self.ffmpeg.clone(),
             cache: PathBuf::from(&self.cache),
@@ -214,13 +221,14 @@ impl Settings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
     Waiting,
     Processing,
     Succeeded,
     Failed,
     Cancelled,
+    Interrupted,
 }
 impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -230,12 +238,27 @@ impl std::fmt::Display for Status {
             Self::Succeeded => "Completed",
             Self::Failed => "Failed",
             Self::Cancelled => "Cancelled",
+            Self::Interrupted => "Interrupted",
         })
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
+    #[serde(default)]
+    pub track_id: usize,
+    #[serde(default)]
+    pub output_hash: Option<String>,
+    #[serde(default)]
+    pub input_hash: Option<String>,
+    #[serde(default)]
+    pub reference_hash: Option<String>,
+    #[serde(default)]
+    pub analysis: Option<crate::analysis::Analysis>,
+    #[serde(default)]
+    pub analysis_error: Option<String>,
+    #[serde(default)]
+    pub limiting_error: Option<f64>,
     pub id: usize,
     pub input: PathBuf,
     pub output: PathBuf,
@@ -245,50 +268,24 @@ pub struct Job {
     pub log: Vec<String>,
 }
 
-pub fn add_job(
-    jobs: &mut Vec<Job>,
-    input: PathBuf,
-    config: Config,
-    id: usize,
-) -> Result<(), String> {
-    if !input.is_file() {
-        return Err(format!("Not a file: {}", input.display()));
-    }
-    let canonical = input.canonicalize().map_err(|e| e.to_string())?;
-    if jobs
-        .iter()
-        .any(|j| j.input == canonical && matches!(j.status, Status::Waiting | Status::Processing))
-    {
-        return Err(format!("Already queued: {}", input.display()));
-    }
-    let stem = input
-        .file_stem()
-        .ok_or("Input has no filename.")?
-        .to_string_lossy();
-    let extension = config.format.extension();
-    let mut suffix = 1;
-    let output = loop {
-        let name = if suffix == 1 {
-            format!("{stem}_output.{extension}")
-        } else {
-            format!("{stem}_output_{suffix}.{extension}")
-        };
-        let candidate = config.output_dir.join(name);
-        if !candidate.exists() && !jobs.iter().any(|j| j.output == candidate) {
-            break candidate;
-        }
-        suffix += 1;
-    };
-    jobs.push(Job {
+#[cfg(test)]
+pub fn test_job(input: PathBuf, output: PathBuf, config: Config, id: usize) -> Job {
+    Job {
         id,
-        input: canonical,
+        track_id: 0,
+        input,
         output,
         config,
         status: Status::Waiting,
-        progress: 0.0,
+        progress: 0.,
         log: Vec::new(),
-    });
-    Ok(())
+        output_hash: None,
+        input_hash: None,
+        reference_hash: None,
+        analysis: None,
+        analysis_error: None,
+        limiting_error: None,
+    }
 }
 
 #[cfg(test)]
@@ -304,30 +301,5 @@ mod tests {
         settings.intensity = "0.5".into();
         settings.bit_depth = "20".into();
         assert!(settings.parse().is_err());
-    }
-    #[test]
-    fn preserves_existing_outputs_and_distinguishes_same_named_inputs() {
-        let tmp = tempfile::tempdir().unwrap();
-        let settings = Settings {
-            output_dir: tmp.path().to_string_lossy().into_owned(),
-            ..Settings::default()
-        };
-        let config = settings.parse().unwrap();
-        std::fs::write(tmp.path().join("track_output.wav"), b"original").unwrap();
-        let mut jobs = Vec::new();
-        for (id, dir) in ["one", "two"].into_iter().enumerate() {
-            let path = tmp.path().join(dir);
-            std::fs::create_dir(&path).unwrap();
-            let input = path.join("track.wav");
-            std::fs::write(&input, b"audio").unwrap();
-            add_job(&mut jobs, input, config.clone(), id).unwrap();
-        }
-        assert_eq!(jobs[0].output.file_name().unwrap(), "track_output_2.wav");
-        assert_eq!(jobs[1].output.file_name().unwrap(), "track_output_3.wav");
-        assert!(add_job(&mut jobs.clone(), jobs[0].input.clone(), config, 2).is_err());
-        assert_eq!(
-            std::fs::read(tmp.path().join("track_output.wav")).unwrap(),
-            b"original"
-        );
     }
 }

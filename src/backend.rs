@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 pub enum Update {
     Line(String),
     Progress(f32),
+    LimitingError(f64),
     Finished(Result<(), String>),
     Cancelled,
 }
@@ -27,6 +28,18 @@ pub fn arguments(job: &Job) -> Vec<OsString> {
     flag("output", job.output.clone().into_os_string());
     flag("ffmpeg", c.ffmpeg.clone().into());
     flag("sound_quality2_cache", c.cache.clone().into_os_string());
+    if let Some(reference) = &c.reference {
+        flag(
+            "mastering5_mastering_reference_file",
+            reference.clone().into_os_string(),
+        );
+    }
+    flag(
+        "limiting_error_spectrogram_output",
+        job.output
+            .with_extension("limiting-error.png")
+            .into_os_string(),
+    );
     for (name, value) in [
         ("mastering", "true".into()),
         ("mastering_mode", "mastering5".into()),
@@ -98,6 +111,25 @@ async fn execute(
             job.output.display()
         )));
     }
+    let input = job.input.clone();
+    let input_hash = job.input_hash.clone();
+    let reference = job.config.reference.clone();
+    let reference_hash = job.reference_hash.clone();
+    let checked = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        if let Some(hash) = input_hash {
+            crate::library::verify(&input, &hash)?;
+        }
+        if let (Some(path), Some(hash)) = (reference, reference_hash) {
+            crate::library::verify(&path, &hash)?;
+        }
+        Ok(())
+    })
+    .await;
+    match checked {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Update::Finished(Err(error)),
+        Err(error) => return Update::Finished(Err(error.to_string())),
+    }
     let scratch = match tempfile::Builder::new().prefix("phaselimiter-").tempdir() {
         Ok(dir) => dir,
         Err(e) => return Update::Finished(Err(format!("Creating temporary directory: {e}"))),
@@ -151,6 +183,15 @@ async fn execute(
                 Err(e) => return Update::Finished(Err(format!("Reading backend stderr: {e}"))),
             },
         };
+        if let Some((_, tail)) = line.split_once("limiting_error:")
+            && let Some(value) = tail
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite())
+        {
+            let _ = sender.send(Update::LimitingError(value)).await;
+        }
         if let Some(value) = progress(&line) {
             let _ = sender.send(Update::Progress(value)).await;
         }
@@ -209,9 +250,7 @@ mod tests {
             output_dir: dir.to_string_lossy().into_owned(),
             ..crate::model::Settings::default()
         };
-        let mut jobs = Vec::new();
-        crate::model::add_job(&mut jobs, input, settings.parse().unwrap(), 0).unwrap();
-        jobs.remove(0)
+        crate::model::test_job(input, dir.join("output.wav"), settings.parse().unwrap(), 0)
     }
 
     #[cfg(unix)]
@@ -237,6 +276,27 @@ mod tests {
         );
         assert!(matches!(updates.last(), Some(Update::Finished(Ok(())))));
         assert_eq!(std::fs::read(output).unwrap(), b"result");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn refuses_existing_outputs_and_modified_inputs() {
+        use iced::futures::StreamExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut job = fake_job("exit 0", dir.path());
+        std::fs::write(&job.output, b"keep me").unwrap();
+        let updates: Vec<_> = run(job.clone(), Arc::new(AtomicBool::new(false)))
+            .collect()
+            .await;
+        assert!(matches!(updates.last(), Some(Update::Finished(Err(_)))));
+        assert_eq!(std::fs::read(&job.output).unwrap(), b"keep me");
+        std::fs::remove_file(&job.output).unwrap();
+        job.input_hash = Some(crate::library::hash(&job.input).unwrap());
+        std::fs::write(&job.input, b"modified").unwrap();
+        let updates: Vec<_> = run(job, Arc::new(AtomicBool::new(false))).collect().await;
+        assert!(
+            matches!(updates.last(),Some(Update::Finished(Err(error))) if error.contains("Stored file has changed"))
+        );
     }
 
     #[cfg(unix)]

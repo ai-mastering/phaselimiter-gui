@@ -60,7 +60,7 @@ def source_archive(build, destination):
         marker.size = len(revision)
         archive.addfile(marker, io.BytesIO(revision))
         for name in ["src", "script", "packaging", ".cargo", ".github", "Cargo.toml", "Cargo.lock",
-                     "rust-toolchain.toml", "LICENSE", "README.md"]:
+                     "rust-toolchain.toml", "build.rs", "LICENSE", "README.md"]:
             archive.add(ROOT / name, arcname="gui/" + name,
                         filter=lambda item: None if "__pycache__" in item.name else item)
 
@@ -123,7 +123,7 @@ def package(build, target, sources=False):
         with (payload / "Contents/Info.plist").open("wb") as output:
             plistlib.dump({"CFBundleExecutable": "phaselimiter-gui", "CFBundleIdentifier": "com.aimastering.phaselimiter-gui",
                           "CFBundleName": "Phaselimiter", "CFBundlePackageType": "APPL",
-                          "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "2",
+                          "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "3",
                           "LSMinimumSystemVersion": "14.0", "NSHighResolutionCapable": True}, output)
         run(["codesign", "--force", "--sign", "-", payload])
         run(["codesign", "--verify", "--deep", "--strict", payload])

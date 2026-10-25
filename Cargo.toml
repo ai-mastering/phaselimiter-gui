@@ -7,9 +7,16 @@ license = "MIT"
 description = "Portable desktop frontend for the phaselimiter mastering engine"
 
 [dependencies]
-iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "x11", "wayland", "tokio"] }
+iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "x11", "wayland", "tokio", "canvas", "image-without-codecs"] }
 tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros"] }
 tempfile = "3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+dirs = "7.0.0"
+miniaudio = { package = "om-fork-miniaudio", version = "0.12.2", default-features = false, features = ["bindgen", "ma-log-level-error", "ma-no-null"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+fs2 = "0.4.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -19,4 +26,5 @@ iced_test = "=0.14.0"
 
 [profile.release]
 strip = "debuginfo"
-
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSFileManager", "NSArray", "NSURL", "NSString", "NSPathUtilities"] }

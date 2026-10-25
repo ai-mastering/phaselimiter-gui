@@ -1,3 +1,11 @@
 [target.x86_64-pc-windows-msvc]
 # Keep the GUI independent of a separately installed Visual C++ runtime.
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# miniaudio 0.10 probes relative framework paths, which may fail on modern macOS.
+# Link the system audio frameworks normally instead. Apply to both Mac targets.
+CFLAGS_x86_64_apple_darwin = "-DMA_NO_RUNTIME_LINKING"
+CFLAGS_aarch64_apple_darwin = "-DMA_NO_RUNTIME_LINKING"
+BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_darwin = "-DMA_NO_RUNTIME_LINKING"
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_darwin = "-DMA_NO_RUNTIME_LINKING"

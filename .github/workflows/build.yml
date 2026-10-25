@@ -38,7 +38,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential nasm pkg-config patchelf ffmpeg libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev xvfb xauth
+          sudo apt-get install -y build-essential clang libclang-dev nasm pkg-config patchelf ffmpeg libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev xvfb xauth
           python -m pip install python-xlib==0.33
       - name: macOS build tools (runner's official Xcode SDK)
         if: runner.os == 'macOS'

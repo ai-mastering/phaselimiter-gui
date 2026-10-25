@@ -41,6 +41,16 @@ PY
         aarch64-apple-darwin) clang_arch=arm64 ;;
         *) echo "Unsupported macOS target: $target" >&2; exit 1 ;;
     esac
+    # The GUI's miniaudio dependency compiles C and generates target bindings.
+    export CC="${CC:-$(command -v clang-19 || command -v clang)}"
+    export AR="${AR:-llvm-ar}"
+    export CC_SHELL_ESCAPED_FLAGS=1
+    # Target-specific variables take precedence over CFLAGS in cc-rs.
+    # Keep the no-runtime-linking definition used by native Mac builds too.
+    task_cflags_var="CFLAGS_${target//-/_}"
+    task_bindgen_var="BINDGEN_EXTRA_CLANG_ARGS_${target//-/_}"
+    export "$task_cflags_var=${!task_cflags_var:-} ${CFLAGS:-} -DMA_NO_RUNTIME_LINKING --target=$clang_arch-apple-macos$MACOSX_DEPLOYMENT_TARGET -isysroot \"$SDKROOT\""
+    export "$task_bindgen_var=${!task_bindgen_var:-} ${BINDGEN_EXTRA_CLANG_ARGS:-} -DMA_NO_RUNTIME_LINKING -isysroot \"$SDKROOT\""
     cargo rustc --locked --release --target "$target" -- \
         -C linker=clang \
         -C "link-arg=--target=$clang_arch-apple-macos$MACOSX_DEPLOYMENT_TARGET" \

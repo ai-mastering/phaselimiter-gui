@@ -4,6 +4,7 @@
 Requires python3-xlib. This exercises the OS/windowing event path;
 it does not call the application's update method or inject an iced message.
 """
+import json
 import os
 import pathlib
 import subprocess
@@ -39,7 +40,7 @@ def main():
 
     def find_window():
         for window in root.query_tree().children:
-            if title(window).startswith("Phaselimiter |"):
+            if title(window).startswith("Phaselimiter"):
                 return window
         return None
 
@@ -49,11 +50,12 @@ def main():
         env = dict(os.environ)
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("WAYLAND_SOCKET", None)
+        env["XDG_DATA_HOME"] = str(pathlib.Path(directory) / "app-data")
         application = subprocess.Popen([str(executable)], env=env)
         source = None
         try:
             target = wait_for(find_window, "GUI window")
-            assert "0 queued" in title(target), title(target)
+            library_file = pathlib.Path(env["XDG_DATA_HOME"]) / "phaselimiter-gui" / "library.json"
             # This independent X11 client owns the selection, like a file manager.
             selection = connection.intern_atom("XdndSelection")
             uri_type = connection.intern_atom("text/uri-list")
@@ -116,10 +118,14 @@ def main():
 
             def queued():
                 pump()
-                return "1 queued" in title(target)
+                try:
+                    library = json.loads(library_file.read_text())
+                    return len(library["tracks"]) == 1 and pathlib.Path(library["tracks"][0]["input"]).read_bytes() == path.read_bytes()
+                except (OSError, ValueError, KeyError):
+                    return False
 
-            wait_for(queued, "dropped Unicode filename in queue")
-            print("PASS: real XDND drop with Unicode and spaces added one file to the queue")
+            wait_for(queued, "dropped Unicode filename in persisted history")
+            print("PASS: real XDND drop with Unicode and spaces added one snapshot to persisted history")
             assert application.poll() is None, "GUI exited unexpectedly"
         finally:
             application.terminate()
