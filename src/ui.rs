@@ -165,13 +165,13 @@ impl App {
                     }),
             ]
             .spacing(4);
-            for (index, job) in self
+            let jobs: Vec<_> = self
                 .library
                 .jobs
                 .iter()
                 .filter(|j| j.track_id == track.id)
-                .enumerate()
-            {
+                .collect();
+            for (index, job) in jobs.into_iter().enumerate().rev() {
                 let key = (track.id, Some(job.id));
                 let unit = match job.config.reference_mode {
                     ReferenceMode::Loudness | ReferenceMode::YoutubeLoudness => "LUFS",

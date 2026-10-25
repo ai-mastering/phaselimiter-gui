@@ -1551,9 +1551,15 @@ mod tests {
         let mut app = app_with_track(dir.path());
         app.queue_master().unwrap();
         app.running = false;
+        app.library.draft.loudness = "-12".into();
+        app.queue_master().unwrap();
+        app.running = false;
         let messages = {
             let mut ui = iced_test::simulator(app.view());
             ui.find("日本語 mix.wav  · #0").unwrap();
+            let older = ui.find("Master 1 · -9 LUFS · Queued").unwrap();
+            let newer = ui.find("Master 2 · -12 LUFS · Queued").unwrap();
+            assert!(newer.bounds().y < older.bounds().y);
             ui.click("Master 1 · -9 LUFS · Queued").unwrap();
             ui.into_messages()
         };
