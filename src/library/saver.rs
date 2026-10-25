@@ -105,12 +105,12 @@ mod tests {
         };
         saver.save(state.clone()).unwrap();
         state.selected = Some((2, Some(3)));
-        state.settings.loudness = "-12".into();
+        state.draft.loudness = "-12".into();
         saver.save(state).unwrap();
         saver.flush().unwrap();
         let saved = Library::load(dir.path()).unwrap();
         assert_eq!(saved.selected, Some((2, Some(3))));
-        assert_eq!(saved.settings.loudness, "-12");
+        assert_eq!(saved.draft.loudness, "-12");
     }
     #[test]
     fn save_errors_are_returned_by_flush_without_replacing_existing_data() {

@@ -34,6 +34,13 @@ impl Analysis {
         self.artifact.as_deref()
     }
 
+    pub fn read_report(path: PathBuf) -> Result<Self, String> {
+        let mut analysis = Self::new(Value::Null);
+        analysis.artifact = Some(path);
+        analysis.load_report()?;
+        Ok(analysis)
+    }
+
     // Reports live outside audio/job directories so removing an input cannot
     // invalidate a reference retained by another mastering.
     pub fn store(root: &Path, bytes: &[u8]) -> Result<Self, String> {
@@ -133,6 +140,9 @@ impl Analysis {
     pub fn number(&self, name: &str) -> Option<f64> {
         self.raw.get(name)?.as_f64().filter(|x| x.is_finite())
     }
+    pub fn sound_quality_error(&self) -> Option<&str> {
+        self.raw.get("sound_quality_error")?.as_str()
+    }
     pub fn series(&self, name: &str, x: &str, y: &str) -> Series {
         let data = self.plot_data();
         match (name, x, y) {
@@ -153,6 +163,60 @@ pub fn executable(backend: &Path) -> PathBuf {
     } else {
         "audio_analyzer"
     })
+}
+
+// The classic detect2 score uses short-window analysis and the prepared
+// detector population; audio_analyzer's optional v1 score is a different model.
+async fn detect_sound_quality(
+    backend: &Path,
+    analyzer_json: &[u8],
+    scratch: &Path,
+) -> Result<Value, String> {
+    let source = scratch.join("detector-input.json");
+    std::fs::write(&source, analyzer_json).map_err(|e| format!("Saving detector input: {e}"))?;
+    let preparation = backend
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Cannot locate resource/detection_preparation.json beside the engine's bin folder.")?
+        .join("resource/detection_preparation.json");
+    let executable = backend.with_file_name(if cfg!(windows) {
+        "audio_detector.exe"
+    } else {
+        "audio_detector"
+    });
+    let mut command = tokio::process::Command::new(&executable);
+    command
+        .arg("detect2")
+        .arg("--source")
+        .arg(source)
+        .arg("--detection_preparation")
+        .arg(preparation)
+        .arg("--neighbor_ratio=0.01")
+        .arg("--outlier_ratio=0.1")
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(1800), command.output())
+        .await
+        .map_err(|_| "audio_detector timed out.".to_string())?
+        .map_err(|e| format!("Could not start {}: {e}", executable.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "audio_detector failed ({}): {}",
+            output.status,
+            stderr.chars().take(1200).collect::<String>()
+        ));
+    }
+    let result: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Invalid audio_detector JSON: {e}"))?;
+    result
+        .get("sound_quality")
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+        .ok_or("audio_detector did not return a finite sound_quality value.")?;
+    Ok(result)
 }
 
 impl Serialize for Analysis {
@@ -240,6 +304,7 @@ pub async fn run(
         .arg("--spectrum_distribution_output")
         .arg(scratch.path().join("frequency.png"))
         .arg("--drr=true")
+        .arg("--sound_quality=false")
         .stdin(Stdio::null())
         .kill_on_drop(true);
     #[cfg(windows)]
@@ -261,12 +326,33 @@ pub async fn run(
                 .collect::<String>()
         ));
     }
-    let value: Value = serde_json::from_slice(&output.stdout)
+    let mut value: Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("Invalid analyzer JSON: {e}"))?;
-    if !value.is_object() {
-        return Err("Analyzer did not return an object.".into());
+    let report = value
+        .as_object_mut()
+        .ok_or("Analyzer did not return an object.")?;
+    // Never fall back to an analyzer score, even if an external analyzer emits it.
+    for key in [
+        "sound_quality",
+        "sound_quality_error",
+        "sound_quality_detection",
+    ] {
+        report.remove(key);
     }
-    let analysis = Analysis::store(&root, &output.stdout)?;
+    report.insert("sound_quality_source".into(), Value::from("audio_detector"));
+    report.insert("sound_quality_neighbor_ratio".into(), Value::from(0.01));
+    report.insert("sound_quality_outlier_ratio".into(), Value::from(0.1));
+    match detect_sound_quality(&backend, &output.stdout, scratch.path()).await {
+        Ok(detection) => {
+            report.insert("sound_quality".into(), detection["sound_quality"].clone());
+            report.insert("sound_quality_detection".into(), detection);
+        }
+        Err(error) => {
+            report.insert("sound_quality_error".into(), Value::from(error));
+        }
+    }
+    let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+    let analysis = Analysis::store(&root, &bytes)?;
     if let Some(report) = analysis.path() {
         let source = scratch.path().join("frequency.png");
         if source.is_file() {
@@ -334,40 +420,136 @@ mod tests {
         assert_eq!(analysis.waveform().len(), 2);
     }
     #[cfg(unix)]
-    #[tokio::test]
-    async fn normalizes_before_analyzing_and_persists_the_reference_report() {
+    fn write_executable(path: &Path, script: &str) {
         use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn analysis_fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        let input = dir.path().join("日本語 input.mp3");
-        std::fs::write(&input, b"fake compressed audio").unwrap();
-        let ffmpeg = dir.path().join("fake ffmpeg");
         std::fs::write(
-            &ffmpeg,
-            "#!/bin/sh\nfor arg do dest=\"$arg\"; done\nprintf normalized > \"$dest\"\n",
+            dir.path().join("日本語 input.mp3"),
+            b"fake compressed audio",
         )
         .unwrap();
-        std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let analyzer = dir.path().join("audio_analyzer");
-        std::fs::write(&analyzer,"#!/bin/sh\n[ \"$1\" = '--input' ] || exit 4\n[ \"$(cat \"$2\")\" = normalized ] || exit 5\nprintf '{\"loudness\":-10,\"bands\":[],\"covariance\":[]}'\n").unwrap();
-        let script = std::fs::read_to_string(&analyzer).unwrap();
-        let script = script.replace("printf '{", "while [ \"$#\" -gt 0 ]; do\n case \"$1\" in --spectrum_distribution_output) printf image > \"$2\";; esac\n shift\ndone\nprintf '{");
-        std::fs::write(&analyzer, script).unwrap();
-        std::fs::set_permissions(&analyzer, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let result = run(
-            dir.path().to_path_buf(),
+        write_executable(
+            &dir.path().join("fake ffmpeg"),
+            "#!/bin/sh\nfor arg do dest=\"$arg\"; done\nprintf normalized > \"$dest\"\n",
+        );
+        let engine = dir.path().join("engine 日本語");
+        std::fs::create_dir_all(engine.join("bin")).unwrap();
+        std::fs::create_dir_all(engine.join("resource")).unwrap();
+        std::fs::write(engine.join("resource/detection_preparation.json"), b"{}").unwrap();
+        write_executable(
+            &engine.join("bin/audio_analyzer"),
+            r#"#!/bin/sh
+[ "$1" = '--input' ] || exit 4
+[ "$(cat "$2")" = normalized ] || exit 5
+quality=0
+while [ "$#" -gt 0 ]; do
+ case "$1" in
+  --sound_quality=false) quality=1;;
+  --sound_quality=true|--analysis_data_dir) exit 6;;
+  --spectrum_distribution_output) printf image > "$2";;
+ esac
+ shift
+done
+[ "$quality" = 1 ] || exit 7
+printf '{"loudness":-10,"sound_quality":0.11,"sound_quality2":0.88,"bands_short":[],"covariance_short":[]}'
+"#,
+        );
+        dir
+    }
+
+    #[cfg(unix)]
+    async fn run_fixture(dir: &Path) -> Analysis {
+        let input = dir.join("日本語 input.mp3");
+        run(
+            dir.to_path_buf(),
             input.clone(),
             crate::library::hash(&input).unwrap(),
-            dir.path().join("phase_limiter"),
-            ffmpeg.display().to_string(),
-            dir.path().join("cache"),
+            dir.join("engine 日本語/bin/phase_limiter"),
+            dir.join("fake ffmpeg").display().to_string(),
+            dir.join("cache"),
         )
         .await
-        .unwrap();
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn normalizes_then_detects_classic_quality_and_persists_both_scores() {
+        let dir = analysis_fixture();
+        write_executable(
+            &dir.path().join("engine 日本語/bin/audio_detector"),
+            r#"#!/bin/sh
+[ "$1" = detect2 ] || exit 4
+source_file=; preparation=; neighbor=; outlier=
+while [ "$#" -gt 0 ]; do
+ case "$1" in
+  --source) source_file="$2"; shift;;
+  --detection_preparation) preparation="$2"; shift;;
+  --neighbor_ratio=0.01) neighbor=yes;;
+  --outlier_ratio=0.1) outlier=yes;;
+ esac
+ shift
+done
+[ -f "$preparation" ] && [ "$neighbor$outlier" = yesyes ] || exit 5
+case "$(cat "$source_file")" in *'"bands_short"'*'"covariance_short"'*) ;; *) exit 6;; esac
+printf '{"sound_quality":0.72,"lof":1.2,"border_lof":1.5,"ranking":[]}'
+"#,
+        );
+        let result = run_fixture(dir.path()).await;
         assert_eq!(result.number("loudness"), Some(-10.));
-        assert!(result.path().unwrap().is_file());
+        assert_eq!(result.number("sound_quality"), Some(0.72));
+        assert_eq!(result.number("sound_quality2"), Some(0.88));
+        assert_eq!(result.raw["sound_quality_source"], "audio_detector");
+        assert_eq!(result.number("sound_quality_neighbor_ratio"), Some(0.01));
+        assert_eq!(result.number("sound_quality_outlier_ratio"), Some(0.1));
+        assert_eq!(result.raw["sound_quality_detection"]["lof"], 1.2);
+        let restored = Analysis::read_report(result.path().unwrap().to_path_buf()).unwrap();
+        assert_eq!(restored.number("sound_quality"), Some(0.72));
         assert_eq!(
             std::fs::read(result.path().unwrap().with_extension("frequency.png")).unwrap(),
             b"image"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detector_errors_keep_analysis_without_falling_back_to_the_analyzer_score() {
+        let dir = analysis_fixture();
+        let detector = dir.path().join("engine 日本語/bin/audio_detector");
+        // Missing executable, failed process, malformed output and missing/invalid score.
+        for script in [
+            None,
+            Some("echo broken-preparation >&2; exit 7"),
+            Some("printf not-json"),
+            Some("printf '{}'"),
+            Some("printf '{\"sound_quality\":null}'"),
+            Some("printf '{\"sound_quality\":1e400}'"),
+        ] {
+            if let Some(script) = script {
+                write_executable(&detector, &format!("#!/bin/sh\n{script}\n"));
+            }
+            let result = run_fixture(dir.path()).await;
+            assert_eq!(result.number("loudness"), Some(-10.));
+            assert_eq!(result.number("sound_quality2"), Some(0.88));
+            assert_eq!(result.number("sound_quality"), None);
+            assert!(
+                result
+                    .sound_quality_error()
+                    .unwrap()
+                    .contains("audio_detector")
+            );
+            let restored = Analysis::read_report(result.path().unwrap().to_path_buf()).unwrap();
+            assert_eq!(restored.sound_quality_error(), result.sound_quality_error());
+        }
+        write_executable(&detector, "#!/bin/sh\nprintf '{\"sound_quality\":0}'\n");
+        let result = run_fixture(dir.path()).await;
+        assert_eq!(result.number("sound_quality"), Some(0.));
+        assert!(result.sound_quality_error().is_none());
     }
 }

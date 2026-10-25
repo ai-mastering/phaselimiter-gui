@@ -1,8 +1,9 @@
 //! Durable snapshots. External source/export paths are never used for playback.
 mod saver;
+mod storage;
 use crate::{
     analysis::Analysis,
-    model::{Job, Settings, Status},
+    model::{AppSettings, Job, Settings, Status},
 };
 pub use saver::SaveWorker;
 use serde::{Deserialize, Serialize};
@@ -26,16 +27,17 @@ pub struct Track {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(try_from = "storage::SavedLibrary")]
 pub struct Library {
-    pub settings: Settings,
-    pub draft: Option<Settings>,
+    pub app_settings: AppSettings,
+    pub draft: Settings,
     pub tracks: Vec<Track>,
     pub jobs: Vec<Job>,
     pub next_id: usize,
     pub selected: Option<(usize, Option<usize>)>,
     pub output_side: Option<bool>,
     pub equalize: Option<bool>,
+    pub comparison_job: Option<usize>,
 }
 
 pub fn default_root() -> Result<PathBuf, String> {
@@ -148,9 +150,38 @@ impl Library {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let mut library: Self =
-            serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
-                .map_err(|e| format!("Cannot read saved library: {e}"))?;
+        let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+        let document: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("Cannot read saved library: {e}"))?;
+        let legacy = document.get("app_settings").is_none();
+        let mut library: Self = serde_json::from_value(document)
+            .map_err(|e| format!("Cannot read saved library: {e}"))?;
+        if legacy {
+            // Old builds cannot read the separated job format. Preserve the exact
+            // manifest before this build can save a migrated snapshot.
+            let digest: String = Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let backup = root.join(format!("library-before-settings-separation-{digest}.json"));
+            if backup.exists() {
+                verify(&backup, &digest)?;
+            } else {
+                let mut temporary =
+                    tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
+                temporary
+                    .write_all(&bytes)
+                    .and_then(|_| temporary.as_file().sync_all())
+                    .map_err(|e| format!("Backing up the old library: {e}"))?;
+                match temporary.persist_noclobber(&backup) {
+                    Ok(_) => {}
+                    Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => {
+                        verify(&backup, &digest)?
+                    }
+                    Err(e) => return Err(format!("Backing up the old library: {e}")),
+                }
+            }
+        }
         for (analysis, error) in library
             .tracks
             .iter_mut()
@@ -300,11 +331,11 @@ mod tests {
         let source = dir.path().join("mix.wav");
         fs::write(&source, b"audio").unwrap();
         let track = import(dir.path(), source, 1).unwrap();
-        state.settings.output_dir = dir.path().display().to_string();
+        state.app_settings.export_dir = dir.path().display().to_string();
         state.jobs.push(crate::model::test_job(
             track.input.clone(),
             dir.path().join("result.wav"),
-            state.settings.parse().unwrap(),
+            state.draft.parse().unwrap(),
             2,
         ));
         state.jobs[0].status = Status::Processing;
@@ -395,7 +426,7 @@ mod tests {
             .path()
             .unwrap()
             .to_path_buf();
-        let mut config = state.settings.parse().unwrap();
+        let mut config = state.draft.parse().unwrap();
         config.reference = Some(path.clone());
         let mut job = crate::model::test_job(
             state.tracks[1].input.clone(),

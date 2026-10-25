@@ -14,22 +14,30 @@ pub enum Kind {
     Spectrum,
     Loudness,
     Histogram,
+    Distribution,
 }
 impl Kind {
-    pub const ALL: [Self; 3] = [Self::Spectrum, Self::Loudness, Self::Histogram];
+    pub const ALL: [Self; 4] = [
+        Self::Spectrum,
+        Self::Loudness,
+        Self::Histogram,
+        Self::Distribution,
+    ];
 }
 impl std::fmt::Display for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Spectrum => "Frequency balance",
-            Self::Loudness => "Loudness over time",
-            Self::Histogram => "Loudness histogram",
+            Self::Spectrum => "Spectrum",
+            Self::Loudness => "Loudness",
+            Self::Histogram => "Histogram",
+            Self::Distribution => "Distribution",
         })
     }
 }
 pub struct Plot {
     pub input: Series,
     pub output: Series,
+    pub reference: Series,
     pub waveform: bool,
     pub logarithmic: bool,
     pub position: f32,
@@ -45,6 +53,7 @@ pub struct State {
 struct CachedPlot {
     input: Series,
     output: Series,
+    reference: Series,
     waveform: bool,
     logarithmic: bool,
     geometry: canvas::Cache,
@@ -53,6 +62,7 @@ impl CachedPlot {
     fn matches(&self, plot: &Plot) -> bool {
         Arc::ptr_eq(&self.input, &plot.input)
             && Arc::ptr_eq(&self.output, &plot.output)
+            && Arc::ptr_eq(&self.reference, &plot.reference)
             && self.waveform == plot.waveform
             && self.logarithmic == plot.logarithmic
     }
@@ -106,6 +116,7 @@ impl canvas::Program<Message> for Plot {
             .unwrap_or_else(|| CachedPlot {
                 input: self.input.clone(),
                 output: self.output.clone(),
+                reference: self.reference.clone(),
                 waveform: self.waveform,
                 logarithmic: self.logarithmic,
                 geometry: canvas::Cache::new(),
@@ -161,6 +172,7 @@ impl Plot {
             .input
             .iter()
             .chain(self.output.iter())
+            .chain(self.reference.iter())
             .filter(|(x, _)| !self.logarithmic || *x >= 20.)
             .collect();
         let (xmin, xmax, ymin, ymax) = if self.waveform {
@@ -214,6 +226,7 @@ impl Plot {
         for (series, color) in [
             (&self.input, Color::from_rgb8(125, 137, 152)),
             (&self.output, Color::from_rgb8(35, 105, 210)),
+            (&self.reference, Color::from_rgb8(190, 120, 20)),
         ] {
             let path = Path::new(|builder| {
                 let mut first = true;
@@ -245,6 +258,7 @@ mod tests {
         Plot {
             input,
             output: crate::analysis::empty_series(),
+            reference: crate::analysis::empty_series(),
             waveform: true,
             logarithmic: false,
             position: 0.,
@@ -280,5 +294,10 @@ mod tests {
         assert_eq!(state.builds.get(), 2);
         draw(&a, Rectangle::with_size(iced::Size::new(1000., 100.)));
         assert_eq!(state.builds.get(), 3);
+        a.reference = Arc::from([(0., 0.2), (1., 0.5)]);
+        draw(&a, bounds);
+        assert_eq!(state.builds.get(), 4);
+        draw(&a, bounds);
+        assert_eq!(state.builds.get(), 4);
     }
 }

@@ -1,45 +1,168 @@
 use super::*;
-use iced::widget::column;
+use iced::widget::{column, responsive};
+
+const SETTINGS_WIDTH: f32 = 330.;
+const HISTORY_WIDTH: f32 = 215.;
+const WIDE_WIDTH: f32 = 1200.;
 
 impl App {
     pub(super) fn view(&self) -> Element<'_, Message> {
-        let header = row![
-            column![
-                text("PHASELIMITER").size(12),
-                text("Listen, master, compare").size(26)
+        responsive(|size| self.workspace_view(size.width)).into()
+    }
+
+    fn workspace_view(&self, width: f32) -> Element<'_, Message> {
+        let wide = width >= WIDE_WIDTH;
+        let history_visible = self.history_visibility.unwrap_or(width >= 950.);
+        let mut header = row![text("PHASELIMITER").size(15)]
+            .spacing(8)
+            .align_y(iced::Center);
+        header = header.push(
+            button(if history_visible {
+                "Hide history"
+            } else {
+                "History"
+            })
+            .on_press(Message::ToggleHistory(!history_visible))
+            .style(button::secondary)
+            .padding(5),
+        );
+        header = header
+            .push(
+                text_input("Drop audio or paste a file path", &self.input)
+                    .on_input(Message::Input)
+                    .on_submit(Message::AddInput)
+                    .padding(6),
+            )
+            .push(
+                button("Add audio")
+                    .on_press(Message::AddInput)
+                    .style(button::secondary)
+                    .padding(6),
+            )
+            .push(
+                button("App settings")
+                    .on_press(Message::ToggleAppSettings)
+                    .style(button::secondary)
+                    .padding(6),
+            );
+        let mut body = column![header].spacing(8);
+        if self.hovering {
+            body = body.push(text("Release to import audio.").size(13));
+        }
+        if let Some(error) = &self.error {
+            body = body.push(self.error_view(error.clone()));
+        }
+        if let Some(notice) = &self.notice {
+            body = body.push(text(notice).size(12));
+        }
+        let mut workspace = row![].spacing(10).height(Fill);
+        if history_visible {
+            workspace = workspace.push(self.history_view()).push(rule::vertical(1));
+        }
+        let mut center = column![].spacing(8).width(Fill).height(Fill);
+        if let Some(track) = self.track() {
+            let mut title = row![
+                text(if let Some(job) = self.job() {
+                    format!("{} / Master #{} · {}", track.name, job.id, job.status)
+                } else {
+                    track.name.clone()
+                })
+                .size(17)
+                .width(Fill)
             ]
-            .spacing(4),
-            iced::widget::space().width(Fill),
-            button("Settings").on_press(Message::ToggleSettings)
-        ]
-        .align_y(iced::Center);
-        let add = row![
-            text_input("Drop audio here, or paste a file path", &self.input)
-                .on_input(Message::Input)
-                .on_submit(Message::AddInput)
-                .padding(9),
-            button("Add audio").on_press(Message::AddInput).padding(9)
-        ]
-        .spacing(8);
-        let mut history = Column::new().spacing(12);
+            .spacing(6)
+            .align_y(iced::Center);
+            if self.job().is_some_and(|j| j.status == Status::Succeeded) {
+                title = title.push(
+                    button("Export a copy")
+                        .on_press(Message::ToggleExport)
+                        .style(button::secondary)
+                        .padding(4),
+                );
+            }
+            center = center.push(title);
+            if self.show_export && self.job().is_some_and(|j| j.status == Status::Succeeded) {
+                center = center.push(
+                    row![
+                        text_input("Export filename", &self.export_path)
+                            .on_input(Message::ExportPath)
+                            .padding(5),
+                        button("Export").on_press(Message::Export).padding(5)
+                    ]
+                    .spacing(6),
+                );
+            }
+            center = center.push(self.transport_view());
+        }
+        if !wide {
+            center = center.push(
+                row![
+                    button("Analysis").on_press(Message::ShowAnalysis).style(
+                        if !self.show_settings && !self.show_app_settings {
+                            button::primary
+                        } else {
+                            button::secondary
+                        }
+                    ),
+                    button("Mastering settings")
+                        .on_press(Message::ShowMastering)
+                        .style(if self.show_settings && !self.show_app_settings {
+                            button::primary
+                        } else {
+                            button::secondary
+                        }),
+                ]
+                .spacing(6),
+            );
+        }
+        if !wide && (self.show_settings || self.show_app_settings) {
+            center = center.push(self.settings_panel(
+                width
+                    - if history_visible {
+                        HISTORY_WIDTH + 32.
+                    } else {
+                        20.
+                    }
+                    >= 560.,
+            ));
+        } else {
+            center = center.push(
+                scrollable(self.analysis_view())
+                    .spacing(4)
+                    .height(Fill)
+                    .width(Fill),
+            );
+        }
+        workspace = workspace.push(center);
+        if wide {
+            workspace = workspace.push(rule::vertical(1)).push(
+                container(self.settings_panel(false))
+                    .width(SETTINGS_WIDTH)
+                    .height(Fill),
+            );
+        }
+        body = body.push(workspace).push(self.queue_view());
+        container(body).padding(10).height(Fill).width(Fill).into()
+    }
+
+    fn history_view(&self) -> Element<'_, Message> {
+        let mut history = column![].spacing(8);
         if self.library.tracks.is_empty() {
-            history =
-                history.push(text("Add audio to start. Each import keeps its own copy.").size(14));
+            history = history.push(text("Drop audio to begin.").size(13));
         }
         for track in self.library.tracks.iter().rev() {
-            let source_key = (track.id, None);
+            let key = (track.id, None);
             let mut entries = column![
-                button(text(format!("{}  · #{}", track.name, track.id)).size(15))
+                text(format!("{}  · #{}", track.name, track.id)).size(14),
+                button("Original")
+                    .on_press(Message::Select(key))
                     .width(Fill)
-                    .style(if self.selected == Some(source_key) {
+                    .padding(5)
+                    .style(if self.selected == Some(key) {
                         button::primary
                     } else {
-                        button::text
-                    })
-                    .on_press(Message::Select(source_key)),
-                button("Original")
-                    .style(button::text)
-                    .on_press(Message::Select(source_key)),
+                        button::secondary
+                    }),
             ]
             .spacing(4);
             for (index, job) in self
@@ -50,512 +173,846 @@ impl App {
                 .enumerate()
             {
                 let key = (track.id, Some(job.id));
+                let unit = match job.config.reference_mode {
+                    ReferenceMode::Loudness | ReferenceMode::YoutubeLoudness => "LUFS",
+                    _ => "dB",
+                };
                 let label = format!(
                     "Master {} · {} {} · {}",
                     index + 1,
                     job.config.loudness,
-                    match job.config.reference_mode {
-                        ReferenceMode::Loudness | ReferenceMode::YoutubeLoudness => "LUFS",
-                        _ => "dB",
-                    },
+                    unit,
                     job.status
                 );
                 entries = entries.push(
-                    button(text(label).size(13))
-                        .width(Fill)
-                        .style(if self.selected == Some(key) {
-                            button::primary
-                        } else {
-                            button::text
-                        })
-                        .on_press(Message::Select(key)),
+                    button(
+                        column![
+                            text(label).size(12),
+                            text(format!(
+                                "#{}  ·  peak {}  ·  {}",
+                                job.id,
+                                job.config.ceiling,
+                                if job.config.mastering {
+                                    format!("intensity {}", job.config.intensity)
+                                } else {
+                                    "mastering off".into()
+                                }
+                            ))
+                            .size(11),
+                        ]
+                        .spacing(2),
+                    )
+                    .width(Fill)
+                    .padding(5)
+                    .style(if self.selected == Some(key) {
+                        button::primary
+                    } else {
+                        button::secondary
+                    })
+                    .on_press(Message::Select(key)),
                 );
                 if job.status == Status::Processing {
-                    entries = entries.push(progress_bar(0.0..=1.0, job.progress).girth(4));
+                    entries = entries.push(progress_bar(0.0..=1.0, job.progress).girth(3));
                 }
             }
-            history = history.push(
-                container(entries)
-                    .padding(8)
-                    .width(Fill)
-                    .style(container::rounded_box),
-            );
+            history = history.push(entries).push(rule::horizontal(1));
         }
-        let mut left = column![
-            text("Audio & history").size(19),
-            scrollable(history).spacing(12).height(Fill)
+        let mut pane = column![
+            text("Audio & history").size(15),
+            scrollable(history).spacing(4).height(Fill)
         ]
-        .spacing(12)
-        .width(310);
+        .spacing(8);
         if self.importing > 0 {
-            left = left.push(text(format!("Importing {} file(s)…", self.importing)).size(12));
+            pane = pane.push(text(format!("Importing {}…", self.importing)).size(12));
         }
         if let Some(key) = self.selected {
-            left = left.push(
-                button("Master this input")
-                    .on_press(Message::Compose)
-                    .width(Fill),
-            );
-            left = left.push(
-                button("Remove selected")
-                    .on_press(Message::Remove(key))
-                    .style(button::text),
-            );
-        }
-        let mut detail = Column::new().spacing(14).width(Fill);
-        if let Some(track) = self.track() {
-            let job = self.job();
-            detail = detail.push(
-                text(if let Some(job) = job {
-                    format!("{} / Master #{}", track.name, job.id)
-                } else {
-                    track.name.clone()
-                })
-                .size(22),
-            );
-            let mut transport = row![
-                button(if self.player.status().2 {
-                    "Pause"
-                } else {
-                    "Play"
-                })
-                .on_press_maybe(self.loaded.then_some(Message::Play))
-            ]
-            .spacing(10)
-            .align_y(iced::Center);
-            if let Some(job) = job {
-                transport = transport
-                    .push(
-                        button("Original")
-                            .style(if self.output_side {
-                                button::secondary
-                            } else {
-                                button::primary
-                            })
-                            .on_press(Message::Side(false)),
-                    )
-                    .push(
-                        button("Mastered")
-                            .style(if self.output_side {
-                                button::primary
-                            } else {
-                                button::secondary
-                            })
-                            .on_press_maybe(
-                                (job.status == Status::Succeeded).then_some(Message::Side(true)),
-                            ),
-                    );
-            }
-            transport = transport.push(iced::widget::space().width(Fill)).push(
-                checkbox(self.equalize)
-                    .label("Match loudness")
-                    .on_toggle(Message::Equalize),
-            );
-            detail = detail.push(transport);
-            if self.equalize && self.listening_analysis().is_none() {
-                detail = detail.push(
-                    text("Loudness matching is available after analysis completes.").size(12),
+            pane = pane
+                .push(
+                    button("Master this input")
+                        .on_press(Message::Compose)
+                        .width(Fill),
+                )
+                .push(
+                    button("Remove selected")
+                        .on_press(Message::Remove(key))
+                        .style(button::text),
                 );
-            }
-            if self.loading {
-                detail = detail
-                    .push(text("Preparing selection… Current audio continues playing.").size(12));
-            }
+        }
+        pane.width(HISTORY_WIDTH).height(Fill).into()
+    }
+
+    fn transport_view(&self) -> Element<'_, Message> {
+        let mut controls = row![
+            button(if self.player.status().2 {
+                "Pause"
+            } else {
+                "Play"
+            })
+            .on_press_maybe(self.loaded.then_some(Message::Play))
+        ]
+        .spacing(6)
+        .align_y(iced::Center);
+        if let Some(job) = self.job() {
+            controls = controls
+                .push(
+                    button(text(format!("A: {}", self.comparison_label())).size(13))
+                        .style(if self.output_side {
+                            button::secondary
+                        } else {
+                            button::primary
+                        })
+                        .on_press(Message::Side(false)),
+                )
+                .push(
+                    button(text(format!("B: Master #{}", job.id)).size(13))
+                        .style(if self.output_side {
+                            button::primary
+                        } else {
+                            button::secondary
+                        })
+                        .on_press_maybe(
+                            (job.status == Status::Succeeded).then_some(Message::Side(true)),
+                        ),
+                );
+        }
+        controls = controls.push(iced::widget::space().width(Fill)).push(
+            checkbox(self.equalize)
+                .label("Match loudness")
+                .on_toggle(Message::Equalize),
+        );
+        let mut transport = column![
+            controls,
+            canvas(plots::Plot {
+                input: self
+                    .listening_analysis()
+                    .map_or_else(analysis::empty_series, analysis::Analysis::waveform),
+                output: analysis::empty_series(),
+                reference: analysis::empty_series(),
+                waveform: true,
+                logarithmic: false,
+                position: (self.position / self.duration.max(0.001)) as f32,
+                region: self.region.map(|(a, b)| (
+                    (a / self.duration.max(0.001)) as f32,
+                    (b / self.duration.max(0.001)) as f32
+                )),
+            })
+            .width(Fill)
+            .height(65),
+            row![
+                slider(
+                    0.0..=self.duration.max(0.001),
+                    self.position.min(self.duration),
+                    Message::Seek
+                )
+                .step(0.05),
+                text(format!(
+                    "{} / {}",
+                    clock(self.position),
+                    clock(self.duration)
+                ))
+                .size(12),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        ]
+        .spacing(5);
+        let mut loop_row = row![text("Click: seek · Drag: loop").size(11)]
+            .spacing(8)
+            .align_y(iced::Center);
+        if let Some((a, b)) = self.region {
+            loop_row = loop_row
+                .push(text(format!("{}–{}", clock(a), clock(b))).size(11))
+                .push(
+                    button("Clear loop")
+                        .on_press(Message::ClearRegion)
+                        .padding(2)
+                        .style(button::text),
+                );
+        }
+        transport = transport.push(loop_row);
+        if self.loading {
+            transport = transport
+                .push(text("Preparing selection · current audio continues playing").size(12));
+        } else if self.loaded && self.listening_key() != self.active_key {
+            transport = transport
+                .push(text("Selected audio unavailable · playing previous selection").size(12));
+        }
+        if self.equalize && self.listening_analysis().is_none() {
+            transport = transport.push(text("Loudness matching awaits analysis.").size(12));
+        }
+        transport.into()
+    }
+
+    fn analysis_view(&self) -> Element<'_, Message> {
+        let Some(track) = self.track() else {
+            return column![
+                text("Select an original or mastering result").size(18),
+                text("History switches audio at the same playback position.").size(13)
+            ]
+            .spacing(8)
+            .into();
+        };
+        let job = self.job();
+        let baseline = self.comparison_job();
+        let reference = self.reference_analysis();
+        let has_reference = job.is_some_and(|j| j.config.reference.is_some());
+        let mut detail = column![].spacing(7);
+        if let Some(job) = job {
             detail = detail.push(
                 row![
-                    slider(
-                        0.0..=self.duration.max(0.001),
-                        self.position.min(self.duration),
-                        Message::Seek
-                    )
-                    .step(0.05),
-                    text(format!(
-                        "{} / {}",
-                        clock(self.position),
-                        clock(self.duration)
-                    ))
-                    .size(13)
+                    text("Compare A").size(12),
+                    pick_list(
+                        self.comparison_choices(),
+                        Some(ComparisonChoice {
+                            job: baseline.map(|j| j.id)
+                        }),
+                        Message::Compare
+                    ),
+                    button(text(format!("Load settings from Master #{}", job.id)).size(12))
+                        .on_press(Message::UseSettings(job.id))
+                        .padding(3)
+                        .style(button::text),
                 ]
-                .spacing(10),
-            );
-            let listening = self.listening_analysis();
-            detail = detail.push(
-                canvas(plots::Plot {
-                    input: listening
-                        .map_or_else(analysis::empty_series, analysis::Analysis::waveform),
-                    output: analysis::empty_series(),
-                    waveform: true,
-                    logarithmic: false,
-                    position: (self.position / self.duration.max(0.001)) as f32,
-                    region: self.region.map(|(a, b)| {
-                        (
-                            (a / self.duration.max(0.001)) as f32,
-                            (b / self.duration.max(0.001)) as f32,
-                        )
-                    }),
-                })
-                .width(Fill)
-                .height(100),
-            );
-            let mut loop_row =
-                row![text("Click to seek · Drag to loop (playback only)").size(12)].spacing(12);
-            if let Some((a, b)) = self.region {
-                loop_row = loop_row
-                    .push(text(format!("{}–{}", clock(a), clock(b))).size(12))
-                    .push(
-                        button("Clear loop")
-                            .on_press(Message::ClearRegion)
-                            .style(button::text),
-                    );
-            }
-            detail = detail.push(loop_row);
-            let input = track.analysis.as_ref();
-            let output = job.and_then(|j| j.analysis.as_ref());
-            let mut metrics = column![row![
-                text("Measurement").width(Fill),
-                text("Original").width(110),
-                text(if job.is_some() { "Mastered" } else { "" }).width(110)
-            ]]
-            .spacing(7);
-            for (label, key, unit) in [
-                ("Loudness", "loudness", " LUFS"),
-                ("True peak", "true_peak", " dBTP"),
-                ("Loudness range", "loudness_range", " LU"),
-                ("RMS", "rms", " dB"),
-                ("Sound quality (engine score)", "sound_quality2", ""),
-            ] {
-                metrics = metrics.push(row![
-                    text(label).size(13).width(Fill),
-                    text(measure(input, key, unit)).size(13).width(110),
-                    text(if job.is_some() {
-                        measure(output, key, unit)
-                    } else {
-                        String::new()
-                    })
-                    .size(13)
-                    .width(110)
-                ]);
-            }
-            detail = detail.push(container(metrics).padding(12).style(container::rounded_box));
-            let mut status = Column::new().spacing(4);
-            for (key, error) in [
-                ((track.id, None), track.analysis_error.as_ref()),
-                (
-                    (track.id, job.map(|j| j.id)),
-                    job.and_then(|j| j.analysis_error.as_ref()),
-                ),
-            ] {
-                if self.analyzing == Some(key) {
-                    status = status.push(text("Analyzing audio…").size(12));
-                }
-                if let Some(error) = error {
-                    status = status.push(
-                        text(error)
-                            .size(12)
-                            .color(iced::Color::from_rgb8(165, 45, 40)),
-                    );
-                }
-            }
-            detail = detail.push(status).push(
-                button("Analyze / retry analysis")
-                    .on_press(Message::Analyze)
-                    .style(button::text),
-            );
-            detail = detail.push(
-                row![
-                    pick_list(plots::Kind::ALL, Some(self.graph), Message::Graph),
-                    text("Gray: original  ·  Blue: mastered").size(12)
-                ]
-                .spacing(12)
+                .spacing(8)
                 .align_y(iced::Center),
             );
+        }
+        let numeric_width = 99.;
+        let mut heading = row![
+            text("Measurement").size(12).width(172),
+            text("Original").size(12).width(numeric_width)
+        ]
+        .spacing(6);
+        if let Some(baseline) = baseline {
+            heading = heading.push(
+                text(format!("A: #{}", baseline.id))
+                    .size(12)
+                    .width(numeric_width),
+            );
+        }
+        if let Some(job) = job {
+            heading = heading.push(
+                text(format!("B: #{}", job.id))
+                    .size(12)
+                    .width(numeric_width),
+            );
+        }
+        if has_reference {
+            heading = heading.push(text("Reference").size(12).width(numeric_width));
+        }
+        let mut table = column![heading, rule::horizontal(1)].spacing(3);
+        for metric in measurements::ALL {
+            let mut values = row![
+                text(metric.label).size(12).width(172),
+                numeric_cell(metric.format(track.analysis.as_ref()), numeric_width)
+            ]
+            .spacing(6);
+            if let Some(baseline) = baseline {
+                values = values.push(numeric_cell(
+                    metric.format(baseline.analysis.as_ref()),
+                    numeric_width,
+                ));
+            }
+            if let Some(job) = job {
+                values = values.push(numeric_cell(
+                    metric.format(job.analysis.as_ref()),
+                    numeric_width,
+                ));
+            }
+            if has_reference {
+                values = values.push(numeric_cell(metric.format(reference), numeric_width));
+            }
+            table = table.push(values);
+        }
+        if let Some(job) = job {
+            let mut values = row![
+                text("Limiting error").size(12).width(172),
+                numeric_cell("—".into(), numeric_width)
+            ]
+            .spacing(6);
+            if let Some(baseline) = baseline {
+                values = values.push(numeric_cell(
+                    error_value(baseline.limiting_error),
+                    numeric_width,
+                ));
+            }
+            values = values.push(numeric_cell(error_value(job.limiting_error), numeric_width));
+            if has_reference {
+                values = values.push(numeric_cell("—".into(), numeric_width));
+            }
+            table = table.push(values);
+        }
+        detail = detail
+            .push(scrollable(table).horizontal().spacing(4).width(Fill))
+            .push(
+            text("* YouTube compensation: website estimate (−10.3 reference). Missing values: —.")
+                .size(11),
+        );
+        if track.analysis.as_ref().is_some_and(|a| {
+            a.number("sound_quality").is_none() && a.sound_quality_error().is_none()
+        }) {
+            detail = detail
+                .push(text("Reanalyze to calculate missing Professionality scores.").size(11));
+        }
+        for (label, analysis) in [
+            ("Original", track.analysis.as_ref()),
+            ("Compare A", baseline.and_then(|j| j.analysis.as_ref())),
+            ("Selected", job.and_then(|j| j.analysis.as_ref())),
+            ("Reference", reference),
+        ] {
+            if let Some(error) = analysis.and_then(analysis::Analysis::sound_quality_error) {
+                detail = detail.push(self.error_view(format!("{label} Professionality: {error}")));
+            }
+        }
+        for (key, error) in [
+            ((track.id, None), track.analysis_error.as_ref()),
+            (
+                (track.id, job.map(|j| j.id)),
+                job.and_then(|j| j.analysis_error.as_ref()),
+            ),
+        ]
+        .into_iter()
+        .take(if job.is_some() { 2 } else { 1 })
+        {
+            if self.analyzing == Some(key) {
+                detail = detail.push(text("Analyzing…").size(12));
+            }
+            if let Some(error) = error {
+                detail = detail.push(self.error_view(format!(
+                    "{} analysis: {error}",
+                    if key.1.is_some() {
+                        "Selected"
+                    } else {
+                        "Original"
+                    }
+                )));
+            }
+        }
+        if has_reference {
+            let name = self.reference_name();
+            detail = detail.push(text(format!("Reference: {name}")).size(12));
+            if let Some((_, Err(error))) = &self.reference_report {
+                detail = detail
+                    .push(self.error_view(format!("Reference analysis unavailable: {error}")));
+            } else if reference.is_none() {
+                detail = detail.push(text("Loading reference analysis…").size(12));
+            }
+        }
+        let mut tabs = row![].spacing(4);
+        for kind in plots::Kind::ALL {
+            tabs = tabs.push(
+                button(text(kind.to_string()).size(12))
+                    .padding(5)
+                    .style(if self.graph == kind {
+                        button::primary
+                    } else {
+                        button::secondary
+                    })
+                    .on_press(Message::Graph(kind)),
+            );
+        }
+        detail = detail.push(tabs);
+        if self.graph == plots::Kind::Distribution {
+            for (label, analysis) in [
+                (self.comparison_label(), self.comparison_analysis()),
+                ("Selected".into(), job.and_then(|j| j.analysis.as_ref())),
+                ("Reference".into(), reference),
+            ] {
+                if let Some(path) = analysis
+                    .and_then(|a| a.path())
+                    .map(|p| p.with_extension("frequency.png"))
+                    .filter(|p| p.is_file())
+                {
+                    detail = detail
+                        .push(text(label).size(12))
+                        .push(iced::widget::image(path).width(Fill));
+                }
+            }
+            detail = detail.push(
+                text("Distribution images require analysis generated with this application.")
+                    .size(11),
+            );
+        } else {
             let series = |a: Option<&analysis::Analysis>| {
                 a.map_or_else(analysis::empty_series, |a| match self.graph {
                     plots::Kind::Spectrum => a.series("spectrum", "hz", "db"),
                     plots::Kind::Loudness => a.series("loudness_time_series", "sec", "db"),
                     plots::Kind::Histogram => a.series("histogram", "db", "frequency"),
+                    plots::Kind::Distribution => analysis::empty_series(),
                 })
             };
-            detail = detail.push(
-                canvas(plots::Plot {
-                    input: series(input),
-                    output: series(output),
-                    waveform: false,
-                    logarithmic: self.graph == plots::Kind::Spectrum,
-                    position: 0.,
-                    region: None,
-                })
-                .width(Fill)
-                .height(190),
-            );
-            detail = detail.push(
-                text(match self.graph {
-                    plots::Kind::Spectrum => "Frequency (Hz, log scale) / level (dB)",
-                    plots::Kind::Loudness => "Time (seconds) / loudness (dB)",
-                    plots::Kind::Histogram => "Loudness (dB) / frequency",
-                })
-                .size(12),
-            );
-            if let Some(report) = output.or(input)
-                && let Some(path) = report.path()
-            {
-                let image = path.with_extension("frequency.png");
-                if image.is_file() {
-                    detail = detail
-                        .push(text("Frequency distribution").size(14))
-                        .push(iced::widget::image(image).width(Fill));
-                }
-            }
-            if let Some(job) = job {
-                detail = detail.push(
-                    button(if self.show_details {
-                        "▾ Processing details"
-                    } else {
-                        "▸ Processing details"
-                    })
-                    .on_press(Message::Details)
-                    .style(button::text),
-                );
-                if self.show_details {
-                    detail=detail.push(text(format!("Status: {}\nTarget level: {} · Ceiling: {} dB\nIntensity: {} · Mastering: {}\n{} · Seed {} · {} evaluations · {} workers\nBass preservation: {} · Pre-compression: {}\nOutput: {} Hz / {} / {} bits\nReference: {}",job.status,job.config.loudness,job.config.ceiling,job.config.intensity,job.config.mastering,job.config.solver,job.config.seed,job.config.evaluations,job.config.workers,job.config.preserve_bass,job.config.pre_compression,job.config.sample_rate,job.config.format,job.config.bit_depth,if job.config.reference.is_some(){"Custom audio"}else{"Default"})).size(13));
-                    detail = detail.push(text(format!("Reference mode: {} · Peak control: {} · Lowpass peak: {} Hz\nCuts: {}–{} Hz · Oversampling: {}\nLimiter iterations: {} / {} · Noise update: {}", job.config.reference_mode, job.config.ceiling_mode, job.config.lowpass_cut, job.config.low_cut, job.config.high_cut, job.config.oversample, job.config.max_iter1, job.config.max_iter2, job.config.noise_mode)).size(13));
-                    if let Some(error) = job.limiting_error {
-                        detail =
-                            detail.push(text(format!("Limiting error: {error:.3} dB")).size(13));
-                    }
-                    detail = detail
-                        .push(button("Use these settings").on_press(Message::UseSettings(job.id)));
-                    let image_path = job.output.with_extension("limiting-error.png");
-                    if image_path.is_file() {
-                        detail = detail
-                            .push(text("Limiting error spectrogram").size(14))
-                            .push(iced::widget::image(image_path).width(Fill));
-                    }
-                    if let Some(command) = &job.command {
-                        detail = detail
-                            .push(
-                                row![
-                                    text("Executed command").size(14),
-                                    button("Copy command").on_press(Message::CopyCommand(job.id))
-                                ]
-                                .spacing(12),
-                            )
-                            .push(scrollable(text(command).size(12)).height(120));
-                    } else {
-                        detail = detail.push(text("Executed command: not recorded").size(12));
-                    }
-                    detail = detail
-                        .push(text("Backend log").size(14))
-                        .push(scrollable(text(job.log.join("\n")).size(12)).height(180));
-                }
-                if job.status == Status::Succeeded {
-                    detail = detail
-                        .push(rule::horizontal(1))
-                        .push(text("Export a copy").size(15))
-                        .push(
-                            row![
-                                text_input("Destination filename", &self.export_path)
-                                    .on_input(Message::ExportPath)
-                                    .padding(8),
-                                button("Export").on_press(Message::Export)
-                            ]
-                            .spacing(8),
-                        );
-                }
-            } else {
-                detail = detail.push(
+            detail = detail
+                .push(
                     text(format!(
-                        "Added: Unix time {} · Source: {}",
-                        track.added,
-                        track.source.display()
+                        "Gray: {} · Blue: selected{}",
+                        self.comparison_label(),
+                        if has_reference {
+                            " · Orange: reference"
+                        } else {
+                            ""
+                        }
                     ))
-                    .size(12),
+                    .size(11),
+                )
+                .push(
+                    canvas(plots::Plot {
+                        input: series(self.comparison_analysis()),
+                        output: series(job.and_then(|j| j.analysis.as_ref())),
+                        reference: series(reference),
+                        waveform: false,
+                        logarithmic: self.graph == plots::Kind::Spectrum,
+                        position: 0.,
+                        region: None,
+                    })
+                    .width(Fill)
+                    .height(220),
+                )
+                .push(
+                    text(match self.graph {
+                        plots::Kind::Spectrum => "Frequency (Hz, log) / level (dB)",
+                        plots::Kind::Loudness => "Time (s) / loudness (dB)",
+                        _ => "Loudness (dB) / frequency",
+                    })
+                    .size(11),
                 );
-            }
-        } else {
-            detail=detail.push(text("Select an original or a mastering result").size(24)).push(text("Click history items to switch audio at the same playback position. No comparison list to assemble."));
         }
-        let mut body = column![header, add];
-        if self.hovering {
-            body = body.push(text("Release to import an independent copy."));
-        }
-        if let Some(error) = &self.error {
-            body = body.push(
-                text(error)
-                    .color(iced::Color::from_rgb8(170, 40, 40))
-                    .size(13),
-            );
-        }
-        if let Some(notice) = &self.notice {
-            body = body.push(text(notice).size(12));
-        }
-        body = body.push(
-            row![
-                left,
-                rule::vertical(1),
-                scrollable(detail).spacing(12).height(Fill).width(Fill)
-            ]
-            .spacing(18)
-            .height(Fill),
+        detail = detail.push(
+            button("Reanalyze")
+                .on_press(Message::Analyze)
+                .style(button::text),
         );
-        if self.show_settings {
-            let target = self
-                .library
-                .tracks
-                .iter()
-                .find(|t| Some(t.id) == self.composer_track)
-                .map(|t| t.name.as_str())
-                .unwrap_or("Select an input in history");
-            body = body
-                .push(rule::horizontal(1))
+        if let Some(job) = job {
+            detail = detail.push(
+                button(if self.show_details {
+                    "Hide processing details"
+                } else {
+                    "Processing details"
+                })
+                .on_press(Message::Details)
+                .style(button::text),
+            );
+            if self.show_details {
+                detail = detail.push(self.processing_details(job));
+            }
+        }
+        detail.into()
+    }
+
+    fn processing_details<'a>(&'a self, job: &'a Job) -> Element<'a, Message> {
+        let mut details = column![text(format!("Status: {}", job.status)).size(13),
+            text(config_summary(&job.config)).size(12),
+            text(format!("Reference mode: {} · Peak: {} · Lowpass: {} Hz\nCuts: {}–{} Hz · Oversampling: {}\nIterations: {} / {} · Noise: {}\n{} · Seed {} · Evaluations {} · Workers {}\nBass: {} · Pre-compression: {}\nOutput: {} Hz / {} / {} bit",
+                job.config.reference_mode, job.config.ceiling_mode, job.config.lowpass_cut,
+                job.config.low_cut, job.config.high_cut, job.config.oversample, job.config.max_iter1, job.config.max_iter2,
+                job.config.noise_mode, job.config.solver, job.config.seed, job.config.evaluations, job.config.workers,
+                job.config.preserve_bass, job.config.pre_compression, job.config.sample_rate, job.config.format, job.config.bit_depth)).size(12),
+        ].spacing(6);
+        let image = job.output.with_extension("limiting-error.png");
+        if image.is_file() {
+            details = details
+                .push(text("Limiting-error spectrogram").size(13))
+                .push(iced::widget::image(image).width(Fill));
+        }
+        if let Some(command) = &job.command {
+            details = details
                 .push(
                     row![
-                        text(format!("Mastering settings · {target}")).size(17),
-                        iced::widget::space().width(Fill),
-                        button("Close settings").on_press(Message::ToggleSettings)
+                        text("Executed command").size(13),
+                        button("Copy command")
+                            .on_press(Message::CopyCommand(job.id))
+                            .padding(3)
                     ]
-                    .align_y(iced::Center),
+                    .spacing(8),
                 )
-                .push(scrollable(self.settings_view()).spacing(12).height(270))
-                .push(
-                    button("Master with these settings")
-                        .on_press_maybe(self.composer_track.map(|_| Message::Master))
-                        .padding(10),
-                );
+                .push(scrollable(text(command).size(12)).spacing(4).height(100));
         }
+        details
+            .push(
+                row![
+                    text("Backend log").size(13),
+                    button("Copy log")
+                        .on_press(Message::CopyLog(job.id))
+                        .padding(3),
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            )
+            .push(
+                scrollable(
+                    text(
+                        job.log[job.log.len().saturating_sub(400)..]
+                            .iter()
+                            .map(|line| line.chars().take(2000).collect::<String>())
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    )
+                    .size(12),
+                )
+                .spacing(4)
+                .height(160),
+            )
+            .into()
+    }
+
+    fn settings_panel(&self, wide_form: bool) -> Element<'_, Message> {
+        if self.show_app_settings {
+            return column![
+                row![
+                    text("Application settings").size(15),
+                    button("Close").on_press(Message::ToggleAppSettings)
+                ]
+                .spacing(8),
+                scrollable(self.app_settings_view()).spacing(4).height(Fill),
+            ]
+            .spacing(8)
+            .height(Fill)
+            .into();
+        }
+        let target = self.composer_track.or(self.selected.map(|k| k.0));
+        let track = self.library.tracks.iter().find(|t| Some(t.id) == target);
+        let mut heading = column![
+            text("Next mastering").size(15),
+            text(format!(
+                "Input: {}",
+                track.map(|t| t.name.as_str()).unwrap_or("Select an input")
+            ))
+            .size(12)
+        ]
+        .spacing(4);
+        if self.selected.map(|k| k.0) != target && self.selected.is_some() {
+            heading = heading.push(
+                button("Use selected input")
+                    .on_press(Message::Compose)
+                    .padding(4),
+            );
+        }
+        let mut panel = column![
+            heading,
+            scrollable(self.mastering_settings_view(wide_form))
+                .spacing(4)
+                .height(Fill)
+                .width(Fill),
+        ]
+        .spacing(8)
+        .height(Fill);
+        if let Some(job) = self.job() {
+            panel = panel.push(self.run_changes_view(job));
+        }
+        panel
+            .push(
+                button(if self.active.is_some() {
+                    "Run mastering · queue next"
+                } else {
+                    "Run mastering"
+                })
+                .on_press_maybe(track.map(|_| Message::Master))
+                .width(Fill)
+                .padding(9),
+            )
+            .into()
+    }
+
+    fn run_changes_view<'a>(&'a self, job: &'a Job) -> Element<'a, Message> {
+        let differences = settings_differences(&job.config, &self.library.draft);
+        let height = (differences.len().max(1) as f32 * 22.).min(110.);
+        let mut changes = column![].spacing(3);
+        if differences.is_empty() {
+            changes = changes.push(text("No mastering parameter changes").size(12));
+        }
+        for (label, mut old, mut new) in differences {
+            if label == "Reference report" {
+                old = self.reference_name();
+                new = self
+                    .selected_reference()
+                    .map(|r| r.label)
+                    .unwrap_or_else(|| "Default".into());
+            }
+            changes = changes.push(text(format!("{label}: {old} → {new}")).size(12));
+        }
+        column![
+            rule::horizontal(1),
+            text(format!("Changes from Master #{}", job.id)).size(13),
+            text("Recorded → next run").size(11),
+            scrollable(changes).spacing(4).height(height),
+            button(text(format!("Load settings from Master #{}", job.id)).size(12))
+                .on_press(Message::UseSettings(job.id))
+                .padding(4)
+                .style(button::secondary),
+        ]
+        .spacing(4)
+        .into()
+    }
+
+    fn mastering_settings_view(&self, wide_form: bool) -> Element<'_, Message> {
+        let loudness = column![
+            text("Loudness").size(14),
+            pick_list(
+                ReferenceMode::ALL,
+                Some(self.library.draft.reference_mode),
+                Message::ReferenceMode
+            )
+            .width(Fill),
+            field(
+                "Target level (LUFS / dB)",
+                &self.library.draft.loudness,
+                Field::Loudness
+            ),
+        ]
+        .spacing(7)
+        .width(Fill);
+        let mut peak = column![
+            text("Peak").size(14),
+            pick_list(
+                CeilingMode::ALL,
+                Some(self.library.draft.ceiling_mode),
+                Message::CeilingMode
+            )
+            .width(Fill),
+            field("Ceiling (dB)", &self.library.draft.ceiling, Field::Ceiling),
+        ]
+        .spacing(7)
+        .width(Fill);
+        if self.library.draft.ceiling_mode == CeilingMode::LowpassTruePeak {
+            peak = peak.push(field(
+                "Lowpass true-peak frequency (Hz)",
+                &self.library.draft.lowpass_cut,
+                Field::LowpassCut,
+            ));
+        }
+        let common: Element<'_, Message> = if wide_form {
+            row![loudness, peak].spacing(12).into()
+        } else {
+            column![loudness, rule::horizontal(1), peak]
+                .spacing(7)
+                .into()
+        };
+        let mut settings = column![
+            common,
+            rule::horizontal(1),
+            checkbox(self.library.draft.mastering)
+                .label("Automatic mastering")
+                .on_toggle(Message::Mastering),
+            field(
+                "Intensity (0–1)",
+                &self.library.draft.intensity,
+                Field::Intensity
+            ),
+        ]
+        .spacing(7);
+        settings = settings
+            .push(rule::horizontal(1))
+            .push(text("Reference & tone").size(14))
+            .push(
+                pick_list(
+                    self.reference_choices(),
+                    self.selected_reference(),
+                    Message::ChooseReference,
+                )
+                .width(Fill),
+            )
+            .push(
+                checkbox(self.library.draft.preserve_bass)
+                    .label("Preserve bass")
+                    .on_toggle(Message::PreserveBass),
+            )
+            .push(
+                checkbox(self.library.draft.pre_compression)
+                    .label("Pre-compression")
+                    .on_toggle(Message::PreCompression),
+            )
+            .push(
+                row![
+                    field("Low cut (Hz)", &self.library.draft.low_cut, Field::LowCut),
+                    field(
+                        "High cut (Hz)",
+                        &self.library.draft.high_cut,
+                        Field::HighCut
+                    )
+                ]
+                .spacing(8),
+            )
+            .push(text("Both cuts 0: off; otherwise low < high < 22050 Hz.").size(11))
+            .push(rule::horizontal(1))
+            .push(text("Output").size(14))
+            .push(
+                pick_list(
+                    Format::ALL,
+                    Some(self.library.draft.format),
+                    Message::Format,
+                )
+                .width(Fill),
+            )
+            .push(
+                row![
+                    field(
+                        "Sample rate (Hz)",
+                        &self.library.draft.sample_rate,
+                        Field::SampleRate
+                    ),
+                    field(
+                        "WAV bits (32: float)",
+                        &self.library.draft.bit_depth,
+                        Field::BitDepth
+                    )
+                ]
+                .spacing(8),
+            )
+            .push(rule::horizontal(1))
+            .push(text("Limiter").size(14))
+            .push(field(
+                "Oversampling (1, 2, 4, 8, …)",
+                &self.library.draft.oversample,
+                Field::Oversample,
+            ))
+            .push(
+                row![
+                    field(
+                        "Outer iterations",
+                        &self.library.draft.max_iter1,
+                        Field::MaxIter1
+                    ),
+                    field(
+                        "Inner iterations",
+                        &self.library.draft.max_iter2,
+                        Field::MaxIter2
+                    )
+                ]
+                .spacing(8),
+            )
+            .push(text("Noise update").size(12))
+            .push(
+                pick_list(
+                    NoiseMode::ALL,
+                    Some(self.library.draft.noise_mode),
+                    Message::NoiseMode,
+                )
+                .width(Fill),
+            )
+            .push(rule::horizontal(1))
+            .push(text("Optimization").size(14))
+            .push(
+                pick_list(
+                    Solver::ALL,
+                    Some(self.library.draft.solver),
+                    Message::Solver,
+                )
+                .width(Fill),
+            )
+            .push(
+                row![
+                    field(
+                        "Evaluations",
+                        &self.library.draft.evaluations,
+                        Field::Evaluations
+                    ),
+                    field("Seed", &self.library.draft.seed, Field::Seed)
+                ]
+                .spacing(8),
+            )
+            .push(field(
+                "Workers (0: auto)",
+                &self.library.draft.workers,
+                Field::Workers,
+            ));
+        settings.into()
+    }
+
+    fn app_settings_view(&self) -> Element<'_, Message> {
+        column![
+            text("Engine & resources").size(14),
+            text("Blank: bundled with this app. Non-empty: use the specified path.").size(12),
+            button("Clear paths / use bundled tools").on_press(Message::UseBundledTools).style(button::secondary),
+            field(
+                "phase_limiter executable",
+                &self.library.app_settings.backend,
+                Field::Backend
+            ),
+            field(
+                "FFmpeg executable / PATH name",
+                &self.library.app_settings.ffmpeg,
+                Field::Ffmpeg
+            ),
+            field("sound_quality2_cache", &self.library.app_settings.cache, Field::Cache),
+            text("Professionality uses audio_detector beside phase_limiter and resource/detection_preparation.json with its analysis_data corpus.")
+                .size(12),
+            rule::horizontal(1),
+            field("Default export directory", &self.library.app_settings.export_dir, Field::ExportDir),
+            rule::horizontal(1),
+            text(format!(
+                "Library: {:.1} MiB",
+                self.storage_bytes as f64 / 1048576.
+            ))
+            .size(14),
+            text(
+                self.root
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            )
+            .size(12),
+            button("Open library folder").on_press(Message::OpenLibrary),
+        ]
+        .spacing(8)
+        .into()
+    }
+
+    fn queue_view(&self) -> Element<'_, Message> {
         let waiting = self
             .library
             .jobs
             .iter()
             .filter(|j| j.status == Status::Waiting)
             .count();
-        let mut footer = row![
-            text(format!("{waiting} queued")).size(12),
-            button("Start queue")
-                .on_press_maybe((waiting > 0 && self.active.is_none()).then_some(Message::Start)),
-            button("Cancel current & pause")
-                .on_press_maybe(self.active.as_ref().map(|_| Message::Cancel))
-                .style(button::secondary)
-        ]
-        .spacing(10)
-        .align_y(iced::Center);
-        if self.root.is_some() {
-            footer = footer.push(iced::widget::space().width(Fill)).push(
-                button("Library folder")
-                    .on_press(Message::OpenLibrary)
-                    .style(button::text),
+        let mut footer = row![].spacing(8).align_y(iced::Center);
+        if let Some(active) = &self.active
+            && let Some(job) = self.library.jobs.iter().find(|j| j.id == active.id)
+        {
+            footer = footer
+                .push(text(format!("Processing #{}", job.id)).size(12))
+                .push(container(progress_bar(0.0..=1.0, job.progress).girth(5)).width(100));
+        }
+        footer = footer.push(text(format!("{waiting} queued")).size(12));
+        if waiting > 0 && !self.running {
+            footer = footer.push(button("Resume queue").on_press(Message::Start).padding(4));
+        }
+        if self.active.is_some() {
+            footer = footer.push(
+                button("Cancel current & pause")
+                    .on_press(Message::Cancel)
+                    .padding(4)
+                    .style(button::secondary),
             );
         }
-        body = body.push(footer);
-        container(body.spacing(12).width(Fill))
-            .padding(20)
-            .width(Fill)
-            .height(Fill)
-            .into()
+        footer.into()
     }
+}
 
-    fn settings_view(&self) -> Element<'_, Message> {
-        let settings = column![
-            text("New mastering").size(18),
-            pick_list(self.reference_choices(), self.selected_reference(), Message::ChooseReference),
-            text("Applied only when you start a new mastering. History selection does not change settings.").size(12),
-            field(
-                "Output directory",
-                &self.draft.output_dir,
-                Field::OutputDir
-            ),
-            row![
-                field(
-                    "Target level (LUFS / dB by reference)",
-                    &self.draft.loudness,
-                    Field::Loudness
-                ),
-                field(
-                    "Peak ceiling (dB)",
-                    &self.draft.ceiling,
-                    Field::Ceiling
-                )
-            ]
-            .spacing(12),
-            checkbox(self.draft.mastering).label("Automatic mastering").on_toggle(Message::Mastering),
-            field("Mastering intensity (0–1)", &self.draft.intensity, Field::Intensity),
-            text("Volume reference").size(12),
-            pick_list(ReferenceMode::ALL, Some(self.draft.reference_mode), Message::ReferenceMode),
-            text("Peak control").size(12),
-            pick_list(CeilingMode::ALL, Some(self.draft.ceiling_mode), Message::CeilingMode),
-            field("Lowpass true-peak frequency (Hz)", &self.draft.lowpass_cut, Field::LowpassCut),
-            row![field("Low cut (Hz)", &self.draft.low_cut, Field::LowCut), field("High cut (Hz)", &self.draft.high_cut, Field::HighCut)].spacing(12),
-            text("Set both cuts to 0 to disable filtering. Otherwise use low < high < 22050 Hz.").size(12),
-            checkbox(self.draft.preserve_bass)
-                .label("Preserve bass")
-                .on_toggle(Message::PreserveBass),
-            checkbox(self.draft.pre_compression)
-                .label("Pre-compression")
-                .on_toggle(Message::PreCompression),
-            rule::horizontal(1),
-            text("Output").size(18),
-            row![
-                column![
-                    text("Format").size(12),
-                    pick_list(Format::ALL, Some(self.draft.format), Message::Format).width(Fill)
-                ]
-                .spacing(5),
-                field(
-                    "Sample rate (Hz)",
-                    &self.draft.sample_rate,
-                    Field::SampleRate
-                ),
-                field(
-                    "WAV bits (32 = float)",
-                    &self.draft.bit_depth,
-                    Field::BitDepth
-                )
-            ]
-            .spacing(12),
-            rule::horizontal(1),
-            text("Limiter core").size(18),
-            field("Oversampling (1, 2, 4, 8, …)", &self.draft.oversample, Field::Oversample),
-            row![field("Outer iteration limit", &self.draft.max_iter1, Field::MaxIter1), field("Inner iteration limit", &self.draft.max_iter2, Field::MaxIter2)].spacing(12),
-            text("Noise update mode").size(12),
-            pick_list(NoiseMode::ALL, Some(self.draft.noise_mode), Message::NoiseMode),
-            rule::horizontal(1),
-            text("Mastering optimization").size(18),
-            pick_list(Solver::ALL, Some(self.draft.solver), Message::Solver).width(Fill),
-            row![
-                field(
-                    "Evaluation budget",
-                    &self.draft.evaluations,
-                    Field::Evaluations
-                ),
-                field("Seed", &self.draft.seed, Field::Seed)
-            ]
-            .spacing(12),
-            field(
-                "Worker threads (0 = automatic)",
-                &self.draft.workers,
-                Field::Workers
-            ),
-            rule::horizontal(1),
-            text("Engine & resources").size(18),
-            text("Use the backend's feature/codex build. The GUI can open without it.").size(12),
-            field(
-                "phase_limiter executable",
-                &self.draft.backend,
-                Field::Backend
-            ),
-            field(
-                "FFmpeg executable or PATH name",
-                &self.draft.ffmpeg,
-                Field::Ffmpeg
-            ),
-            field("sound_quality2_cache", &self.draft.cache, Field::Cache),
-            rule::horizontal(1),
-            text(format!("Library storage: {:.1} MiB",self.storage_bytes as f64 / 1048576.)).size(15),
-            text(self.root.as_ref().map(|p|p.display().to_string()).unwrap_or_default()).size(12),
-            button("Open library folder").on_press(Message::OpenLibrary),
-        ]
-        .spacing(12);
-
-        settings.into()
-    }
+fn numeric_cell<'a>(value: String, width: f32) -> Element<'a, Message> {
+    text(value)
+        .size(12)
+        .font(iced::Font::MONOSPACE)
+        .width(width)
+        .align_x(iced::alignment::Horizontal::Right)
+        .into()
+}
+fn error_value(value: Option<f64>) -> String {
+    value
+        .filter(|v| v.is_finite())
+        .map_or_else(|| "—".into(), |v| format!("{v:.3} dB"))
+}
+fn config_summary(c: &model::Config) -> String {
+    format!(
+        "{} {} · peak {} dB · {}",
+        c.loudness,
+        match c.reference_mode {
+            ReferenceMode::Loudness | ReferenceMode::YoutubeLoudness => "LUFS",
+            _ => "dB",
+        },
+        c.ceiling,
+        if c.mastering {
+            format!("intensity {}", c.intensity)
+        } else {
+            "mastering off".into()
+        }
+    )
 }

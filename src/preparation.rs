@@ -51,11 +51,26 @@ impl Cache {
 impl App {
     pub(super) fn listening_key(&self) -> Option<AudioKey> {
         let (track, job) = self.selected?;
-        Some((track, if self.output_side { job } else { None }))
+        Some((
+            track,
+            if self.output_side {
+                job
+            } else if job.is_some() {
+                self.comparison_job().map(|j| j.id)
+            } else {
+                None
+            },
+        ))
     }
     pub(super) fn listening_analysis(&self) -> Option<&analysis::Analysis> {
-        if self.output_side && self.job().is_some() {
-            self.job()?.analysis.as_ref()
+        let (_, job) = self.listening_key()?;
+        if let Some(id) = job {
+            self.library
+                .jobs
+                .iter()
+                .find(|j| j.id == id)?
+                .analysis
+                .as_ref()
         } else {
             self.track()?.analysis.as_ref()
         }
@@ -96,7 +111,7 @@ impl App {
             return Task::none();
         }
         let cached = self.prepared.get(&path);
-        let ffmpeg = self.draft.ffmpeg.clone();
+        let ffmpeg = self.library.app_settings.ffmpeg_command();
         let message_path = path.clone();
         Task::perform(
             async move {

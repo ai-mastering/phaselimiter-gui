@@ -3,16 +3,20 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod analysis;
 mod backend;
+mod comparison;
+mod diagnostics;
 mod library;
+mod measurements;
 mod model;
 mod playback;
 mod plots;
 mod preparation;
 mod ui;
 
+use comparison::{ComparisonChoice, settings_differences};
 use iced::widget::{
-    Column, button, canvas, checkbox, column, container, pick_list, progress_bar, row, rule,
-    scrollable, slider, text, text_input,
+    button, canvas, checkbox, column, container, pick_list, progress_bar, row, rule, scrollable,
+    slider, text, text_input,
 };
 use iced::{Element, Fill, Subscription, Task, Theme};
 use library::{Library, Track};
@@ -37,7 +41,7 @@ fn main() -> iced::Result {
         .title("Phaselimiter")
         .subscription(App::subscription)
         .theme(Theme::Light)
-        .window_size((1240.0, 860.0))
+        .window_size((1280.0, 800.0))
         .exit_on_close_request(false)
         .run()
 }
@@ -52,7 +56,7 @@ enum Field {
     Backend,
     Ffmpeg,
     Cache,
-    OutputDir,
+    ExportDir,
     Loudness,
     Intensity,
     Ceiling,
@@ -80,7 +84,13 @@ enum Message {
     PreCompression(bool),
     ChooseReference(ReferenceChoice),
     Compose,
-    ToggleSettings,
+    ShowAnalysis,
+    ShowMastering,
+    ToggleExport,
+    ToggleAppSettings,
+    ToggleHistory(bool),
+    Compare(ComparisonChoice),
+    ReferenceLoaded(PathBuf, Result<analysis::Analysis, String>),
     UseSettings(usize),
     Master,
     Start,
@@ -103,6 +113,10 @@ enum Message {
     Graph(plots::Kind),
     Details,
     CopyCommand(usize),
+    CopyLog(usize),
+    CopyText(String),
+    SelectDiagnostic(String, iced::widget::text_editor::Action),
+    UseBundledTools,
     StorageSize(u64),
     OpenLibrary,
     FolderOpened(Result<(), String>),
@@ -122,7 +136,6 @@ struct App {
     // Drop the save worker before releasing the library lock.
     save_worker: Option<library::SaveWorker>,
     _library_lock: Option<std::fs::File>,
-    draft: Settings,
     input: String,
     selected: Option<AudioKey>,
     active: Option<Active>,
@@ -132,6 +145,12 @@ struct App {
     error: Option<String>,
     notice: Option<String>,
     show_settings: bool,
+    show_export: bool,
+    show_app_settings: bool,
+    history_visibility: Option<bool>,
+    comparison_job: Option<usize>,
+    reference_report: Option<(PathBuf, Result<analysis::Analysis, String>)>,
+    reference_pending: Option<PathBuf>,
     composer_track: Option<usize>,
     show_details: bool,
     output_side: bool,
@@ -151,17 +170,16 @@ struct App {
     duration: f64,
     export_path: String,
     storage_bytes: u64,
+    diagnostics: Vec<diagnostics::Diagnostic>,
 }
 impl Default for App {
     fn default() -> Self {
         let library = Library::default();
-        let draft = library.settings.clone();
         Self {
             library,
             root: None,
             save_worker: None,
             _library_lock: None,
-            draft,
             input: String::new(),
             selected: None,
             active: None,
@@ -171,6 +189,12 @@ impl Default for App {
             error: None,
             notice: None,
             show_settings: false,
+            show_export: false,
+            show_app_settings: false,
+            history_visibility: None,
+            comparison_job: None,
+            reference_report: None,
+            reference_pending: None,
             composer_track: None,
             show_details: false,
             output_side: false,
@@ -190,6 +214,7 @@ impl Default for App {
             duration: 0.,
             export_path: String::new(),
             storage_bytes: 0,
+            diagnostics: Vec::new(),
         }
     }
 }
@@ -205,16 +230,14 @@ impl App {
             Ok((root, library, lock, worker)) => {
                 app.save_worker = Some(worker);
                 app._library_lock = Some(lock);
-                app.draft = library
-                    .draft
-                    .clone()
-                    .unwrap_or_else(|| library.settings.clone());
                 app.selected = library.selected;
+                app.comparison_job = library.comparison_job;
                 app.output_side = library
                     .output_side
                     .unwrap_or_else(|| library.selected.is_some_and(|key| key.1.is_some()));
                 app.equalize = library.equalize.unwrap_or(true);
                 app.library = library;
+                app.export_path = app.job().map(|j| app.default_export(j)).unwrap_or_default();
                 app.root = Some(root);
                 for t in &app.library.tracks {
                     if t.analysis.is_none() && t.analysis_error.is_none() {
@@ -239,7 +262,9 @@ impl App {
         let task = app.prepare();
         let analysis = app.start_analysis();
         let storage = app.refresh_storage();
-        (app, Task::batch([task, analysis, storage]))
+        let reference = app.load_reference();
+        app.refresh_diagnostics();
+        (app, Task::batch([task, analysis, storage, reference]))
     }
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
@@ -276,7 +301,7 @@ impl App {
         self.library.selected = self.selected;
         self.library.output_side = Some(self.output_side);
         self.library.equalize = Some(self.equalize);
-        self.library.draft = Some(self.draft.clone());
+        self.library.comparison_job = self.comparison_job;
         let result = if let Some(worker) = &self.save_worker {
             worker.save(self.library.clone())
         } else if let Some(root) = &self.root {
@@ -350,15 +375,15 @@ impl App {
                 continue;
             };
             self.analyzing = Some(key);
-            let settings = self.draft.clone();
+            let settings = self.library.app_settings.clone();
             return Task::perform(
                 analysis::run(
                     root,
                     input,
                     hash,
-                    PathBuf::from(settings.backend),
-                    settings.ffmpeg,
-                    PathBuf::from(settings.cache),
+                    settings.backend_path(),
+                    settings.ffmpeg_command(),
+                    settings.cache_path(),
                 ),
                 move |result| Message::Analyzed(key, result),
             );
@@ -410,7 +435,7 @@ impl App {
         self.library.next_id += 1;
         let dir = root.join("jobs").join(id.to_string());
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let config = self.draft.parse()?;
+        let config = self.library.draft.parse()?;
         if let Some(reference) = &config.reference {
             let expected = self
                 .library
@@ -444,6 +469,7 @@ impl App {
             input: track.input,
             output,
             config,
+            tools: self.library.app_settings.resolved_tools(),
             status: Status::Waiting,
             progress: 0.,
             log: Vec::new(),
@@ -455,9 +481,8 @@ impl App {
             limiting_error: None,
             command: None,
         });
-        self.library.settings = self.draft.clone();
         self.running = true;
-        self.show_settings = false;
+        self.composer_track = Some(track.id);
         self.notice = Some("Mastering queued. Playback selection is unchanged.".into());
         Ok(())
     }
@@ -467,6 +492,12 @@ impl App {
         match message {
             Message::Edit(field, value) => {
                 *self.field_mut(field) = value;
+                if matches!(field, Field::ExportDir) {
+                    self.export_path = self
+                        .job()
+                        .map(|j| self.default_export(j))
+                        .unwrap_or_default();
+                }
                 save = true;
             }
             Message::Input(value) => self.input = value,
@@ -499,57 +530,80 @@ impl App {
                 save = true;
             }
             Message::Mastering(v) => {
-                self.draft.mastering = v;
+                self.library.draft.mastering = v;
                 save = true;
             }
             Message::ReferenceMode(v) => {
-                self.draft.reference_mode = v;
+                self.library.draft.reference_mode = v;
                 save = true;
             }
             Message::CeilingMode(v) => {
-                self.draft.ceiling_mode = v;
+                self.library.draft.ceiling_mode = v;
                 save = true;
             }
             Message::NoiseMode(v) => {
-                self.draft.noise_mode = v;
+                self.library.draft.noise_mode = v;
                 save = true;
             }
             Message::Format(v) => {
-                self.draft.format = v;
+                self.library.draft.format = v;
                 save = true;
             }
             Message::Solver(v) => {
-                self.draft.solver = v;
+                self.library.draft.solver = v;
                 save = true;
             }
             Message::PreserveBass(v) => {
-                self.draft.preserve_bass = v;
+                self.library.draft.preserve_bass = v;
                 save = true;
             }
             Message::PreCompression(v) => {
-                self.draft.pre_compression = v;
+                self.library.draft.pre_compression = v;
                 save = true;
             }
             Message::ChooseReference(choice) => {
-                self.draft.reference = choice.path;
+                self.library.draft.reference = choice.path;
                 save = true;
             }
             Message::Compose => {
                 self.composer_track = self.selected.map(|key| key.0);
                 self.show_settings = true;
+                self.show_app_settings = false;
             }
-            Message::ToggleSettings => {
-                self.show_settings = !self.show_settings;
-                if self.show_settings {
-                    self.composer_track = self.selected.map(|key| key.0);
-                }
+            Message::ToggleExport => self.show_export = !self.show_export,
+            Message::ShowAnalysis => {
+                self.show_settings = false;
+                self.show_app_settings = false;
+            }
+            Message::ShowMastering => {
+                self.show_settings = true;
+                self.show_app_settings = false;
+            }
+            Message::ToggleAppSettings => {
+                self.show_app_settings = !self.show_app_settings;
                 tasks.push(self.refresh_storage());
+            }
+            Message::ToggleHistory(visible) => self.history_visibility = Some(visible),
+            Message::Compare(choice) => {
+                self.comparison_job = choice.job;
+                if !self.output_side {
+                    tasks.push(self.prepare());
+                }
+                save = true;
+            }
+            Message::ReferenceLoaded(path, result) => {
+                if self.reference_pending.as_ref() == Some(&path) {
+                    self.reference_pending = None;
+                    self.reference_report = Some((path, result));
+                }
             }
             Message::UseSettings(id) => {
                 if let Some(job) = self.library.jobs.iter().find(|j| j.id == id) {
                     self.composer_track = Some(job.track_id);
-                    self.draft = settings_from_config(&job.config);
+                    self.library.draft = settings_from_config(&job.config);
                     self.show_settings = true;
+                    self.show_app_settings = false;
+                    save = true;
                 }
             }
             Message::Master => match self.queue_master() {
@@ -566,7 +620,14 @@ impl App {
                 }
             }
             Message::Select(key) => {
+                if self.selected.map(|k| k.0) != Some(key.0)
+                    || key.1.is_none()
+                    || self.comparison_job == key.1
+                {
+                    self.comparison_job = None;
+                }
                 self.selected = Some(key);
+                self.show_export = false;
                 self.output_side = key.1.is_some();
                 self.error = None;
                 self.notice = None;
@@ -575,6 +636,7 @@ impl App {
                     .map(|j| self.default_export(j))
                     .unwrap_or_default();
                 tasks.push(self.prepare());
+                tasks.push(self.load_reference());
                 save = true;
             }
             Message::Remove(key) => {
@@ -595,11 +657,8 @@ impl App {
                                 .and_then(|a| a.path())
                                 .map(|p| p.display().to_string())
                                 .unwrap_or_default();
-                            if self.draft.reference == reference {
-                                self.draft.reference.clear();
-                            }
-                            if self.library.settings.reference == reference {
-                                self.library.settings.reference.clear();
+                            if self.library.draft.reference == reference {
+                                self.library.draft.reference.clear();
                             }
                         }
                         if self.composer_track == Some(key.0) {
@@ -622,6 +681,10 @@ impl App {
                         .collect();
                     if let Some(id) = key.1 {
                         self.library.jobs.retain(|j| j.id != id);
+                        if self.comparison_job == Some(id) {
+                            self.comparison_job = None;
+                            tasks.push(self.prepare());
+                        }
                     } else {
                         self.library.jobs.retain(|j| j.track_id != key.0);
                         self.library.tracks.retain(|t| t.id != key.0);
@@ -672,6 +735,25 @@ impl App {
                     tasks.push(iced::clipboard::write(command));
                 }
             }
+            Message::CopyLog(id) => {
+                if let Some(job) = self.library.jobs.iter().find(|job| job.id == id) {
+                    tasks.push(iced::clipboard::write(job.log.join("\n")));
+                }
+            }
+            Message::CopyText(value) => tasks.push(iced::clipboard::write(value)),
+            Message::UseBundledTools => {
+                self.library.app_settings.backend.clear();
+                self.library.app_settings.ffmpeg.clear();
+                self.library.app_settings.cache.clear();
+                save = true;
+            }
+            Message::SelectDiagnostic(key, action) => {
+                if !action.is_edit()
+                    && let Some(diagnostic) = self.diagnostics.iter_mut().find(|d| d.text == key)
+                {
+                    diagnostic.content.perform(action);
+                }
+            }
             Message::Backend(id, update) => {
                 if !self.active.as_ref().is_some_and(|a| a.id == id) {
                     return Task::none();
@@ -683,9 +765,6 @@ impl App {
                             save = true;
                         }
                         backend::Update::Line(line) => {
-                            if job.log.len() >= 400 {
-                                job.log.remove(0);
-                            }
                             job.log.push(line);
                         }
                         backend::Update::Progress(p) => job.progress = job.progress.max(p),
@@ -771,6 +850,8 @@ impl App {
                 save = true;
             }
             Message::Analyze => {
+                self.reference_report = None;
+                tasks.push(self.load_reference());
                 if let Some((id, job)) = self.selected {
                     for key in [(id, None), (id, job)] {
                         if !self.analysis_queue.contains(&key) && self.analyzing != Some(key) {
@@ -889,6 +970,7 @@ impl App {
         }
         tasks.push(self.start_next());
         tasks.push(self.start_analysis());
+        self.refresh_diagnostics();
         Task::batch(tasks)
     }
     fn default_export(&self, job: &Job) -> String {
@@ -905,8 +987,9 @@ impl App {
                     .into_owned()
             })
             .unwrap_or_else(|| "audio".into());
-        job.config
-            .output_dir
+        self.library
+            .app_settings
+            .export_directory()
             .join(format!(
                 "{name}_master_{}.{}",
                 job.id,
@@ -917,24 +1000,24 @@ impl App {
     }
     fn field_mut(&mut self, field: Field) -> &mut String {
         match field {
-            Field::LowCut => &mut self.draft.low_cut,
-            Field::HighCut => &mut self.draft.high_cut,
-            Field::LowpassCut => &mut self.draft.lowpass_cut,
-            Field::Oversample => &mut self.draft.oversample,
-            Field::MaxIter1 => &mut self.draft.max_iter1,
-            Field::MaxIter2 => &mut self.draft.max_iter2,
-            Field::Backend => &mut self.draft.backend,
-            Field::Ffmpeg => &mut self.draft.ffmpeg,
-            Field::Cache => &mut self.draft.cache,
-            Field::OutputDir => &mut self.draft.output_dir,
-            Field::Loudness => &mut self.draft.loudness,
-            Field::Intensity => &mut self.draft.intensity,
-            Field::Ceiling => &mut self.draft.ceiling,
-            Field::SampleRate => &mut self.draft.sample_rate,
-            Field::BitDepth => &mut self.draft.bit_depth,
-            Field::Workers => &mut self.draft.workers,
-            Field::Evaluations => &mut self.draft.evaluations,
-            Field::Seed => &mut self.draft.seed,
+            Field::LowCut => &mut self.library.draft.low_cut,
+            Field::HighCut => &mut self.library.draft.high_cut,
+            Field::LowpassCut => &mut self.library.draft.lowpass_cut,
+            Field::Oversample => &mut self.library.draft.oversample,
+            Field::MaxIter1 => &mut self.library.draft.max_iter1,
+            Field::MaxIter2 => &mut self.library.draft.max_iter2,
+            Field::Backend => &mut self.library.app_settings.backend,
+            Field::Ffmpeg => &mut self.library.app_settings.ffmpeg,
+            Field::Cache => &mut self.library.app_settings.cache,
+            Field::ExportDir => &mut self.library.app_settings.export_dir,
+            Field::Loudness => &mut self.library.draft.loudness,
+            Field::Intensity => &mut self.library.draft.intensity,
+            Field::Ceiling => &mut self.library.draft.ceiling,
+            Field::SampleRate => &mut self.library.draft.sample_rate,
+            Field::BitDepth => &mut self.library.draft.bit_depth,
+            Field::Workers => &mut self.library.draft.workers,
+            Field::Evaluations => &mut self.library.draft.evaluations,
+            Field::Seed => &mut self.library.draft.seed,
         }
     }
 }
@@ -968,11 +1051,13 @@ impl App {
                     })
                 }),
         );
-        if !self.draft.reference.is_empty()
-            && !choices.iter().any(|c| c.path == self.draft.reference)
+        if !self.library.draft.reference.is_empty()
+            && !choices
+                .iter()
+                .any(|c| c.path == self.library.draft.reference)
         {
             choices.push(ReferenceChoice {
-                path: self.draft.reference.clone(),
+                path: self.library.draft.reference.clone(),
                 label: "Reference: saved with this result".into(),
             });
         }
@@ -981,7 +1066,7 @@ impl App {
     fn selected_reference(&self) -> Option<ReferenceChoice> {
         self.reference_choices()
             .into_iter()
-            .find(|r| r.path == self.draft.reference)
+            .find(|r| r.path == self.library.draft.reference)
     }
 }
 fn field<'a>(label: &'static str, value: &'a str, field: Field) -> Element<'a, Message> {
@@ -989,19 +1074,15 @@ fn field<'a>(label: &'static str, value: &'a str, field: Field) -> Element<'a, M
         text(label).size(12),
         text_input(label, value)
             .on_input(move |v| Message::Edit(field, v))
-            .padding(8)
+            .padding(5)
     ]
-    .spacing(5)
+    .spacing(3)
     .width(Fill)
     .into()
 }
 fn clock(seconds: f64) -> String {
     let seconds = seconds.max(0.) as u64;
     format!("{}:{:02}", seconds / 60, seconds % 60)
-}
-fn measure(a: Option<&analysis::Analysis>, key: &str, unit: &str) -> String {
-    a.and_then(|a| a.number(key))
-        .map_or_else(|| "—".into(), |v| format!("{v:.1}{unit}"))
 }
 fn settings_from_config(c: &model::Config) -> Settings {
     Settings {
@@ -1015,10 +1096,6 @@ fn settings_from_config(c: &model::Config) -> Settings {
         high_cut: c.high_cut.to_string(),
         low_cut: c.low_cut.to_string(),
         mastering: c.mastering,
-        backend: c.backend.display().to_string(),
-        ffmpeg: c.ffmpeg.clone(),
-        cache: c.cache.display().to_string(),
-        output_dir: c.output_dir.display().to_string(),
         loudness: c.loudness.to_string(),
         intensity: c.intensity.to_string(),
         ceiling: c.ceiling.to_string(),
@@ -1050,7 +1127,7 @@ mod tests {
             root: Some(dir.to_path_buf()),
             ..App::default()
         };
-        app.draft.output_dir = dir.display().to_string();
+        app.library.app_settings.export_dir = dir.display().to_string();
         app.library.tracks.push(track);
         app.library.next_id = 1;
         app.selected = Some((0, None));
@@ -1058,9 +1135,7 @@ mod tests {
     }
     #[test]
     fn new_processing_settings_survive_history_recall() {
-        let dir = tempfile::tempdir().unwrap();
         let settings = Settings {
-            output_dir: dir.path().display().to_string(),
             mastering: false,
             noise_mode: NoiseMode::Adaptive,
             reference_mode: ReferenceMode::Rms,
@@ -1183,31 +1258,259 @@ mod tests {
         app.library.next_id = 2;
         let _ = app.update(Message::Compose);
         let _ = app.update(Message::Select((1, None)));
+        let _ = app.update(Message::ShowAnalysis);
+        let _ = app.update(Message::ShowMastering);
         assert_eq!(app.composer_track, Some(0));
         app.queue_master().unwrap();
         assert_eq!(app.library.jobs[0].track_id, 0);
     }
     #[test]
+    fn history_recall_preserves_tool_overrides_and_clearing_them_does_not_change_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        app.running = false;
+        let recorded = app.library.jobs[0].tools.backend.clone();
+        let _ = app.update(Message::UseSettings(1));
+        assert!(app.library.app_settings.backend.is_empty());
+        assert!(app.library.app_settings.ffmpeg.is_empty());
+        assert!(app.library.app_settings.cache.is_empty());
+        app.library.app_settings.backend = "explicit engine".into();
+        app.library.app_settings.ffmpeg = "explicit ffmpeg".into();
+        app.library.app_settings.cache = "explicit cache".into();
+        let _ = app.update(Message::UseSettings(1));
+        assert_eq!(app.library.app_settings.backend, "explicit engine");
+        assert_eq!(app.library.app_settings.ffmpeg, "explicit ffmpeg");
+        assert_eq!(app.library.app_settings.cache, "explicit cache");
+        let loudness = app.library.draft.loudness.clone();
+        let _ = app.update(Message::UseBundledTools);
+        assert!(app.library.app_settings.backend.is_empty());
+        assert!(app.library.app_settings.ffmpeg.is_empty());
+        assert!(app.library.app_settings.cache.is_empty());
+        assert_eq!(app.library.draft.loudness, loudness);
+        assert_eq!(app.library.jobs[0].tools.backend, recorded);
+        assert!(
+            Library::load(dir.path())
+                .unwrap()
+                .app_settings
+                .backend
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn export_preferences_are_global_and_never_block_or_get_recalled_with_mastering() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        app.running = false;
+        let destination = dir.path().join("missing export directory");
+        app.library.app_settings.export_dir = destination.display().to_string();
+        let _ = app.update(Message::Select((0, Some(1))));
+        assert!(std::path::Path::new(&app.export_path).starts_with(&destination));
+        let _ = app.update(Message::UseSettings(1));
+        assert_eq!(app.library.app_settings.export_directory(), destination);
+        app.queue_master().unwrap();
+        app.running = false;
+        assert_eq!(app.library.jobs.len(), 2);
+        let new_destination = dir.path().join("another export directory");
+        let _ = app.update(Message::Edit(
+            Field::ExportDir,
+            new_destination.display().to_string(),
+        ));
+        assert!(std::path::Path::new(&app.export_path).starts_with(&new_destination));
+        let _ = app.update(Message::Select((0, Some(2))));
+        assert!(std::path::Path::new(&app.export_path).starts_with(new_destination));
+        let saved = serde_json::to_value(&app.library).unwrap();
+        assert!(saved["draft"].get("output_dir").is_none());
+        assert!(saved["jobs"][0]["config"].get("output_dir").is_none());
+    }
+
+    #[test]
+    fn changes_and_explicit_recall_are_visible_immediately_above_run_on_small_screens() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        app.running = false;
+        let _ = app.update(Message::Select((0, Some(1))));
+        let _ = app.update(Message::Compose);
+        app.library.draft.loudness = "-12".into();
+        app.library.draft.ceiling = "-1".into();
+        app.library.draft.intensity = "0.2".into();
+        app.library.draft.sample_rate = "48000".into();
+        app.library.draft.evaluations = "100".into();
+        app.library.draft.seed = "42".into();
+        let mut ui = iced_test::Simulator::with_size(
+            Default::default(),
+            iced::Size::new(850., 650.),
+            app.view(),
+        );
+        let changes = ui.find("Changes from Master #1").unwrap();
+        assert!(changes.visible_bounds().is_some());
+        let run = ui.find("Run mastering").unwrap();
+        assert!(run.visible_bounds().is_some());
+        assert!(run.bounds().y > changes.bounds().y);
+        assert!(run.bounds().y - changes.bounds().y < 220.);
+        assert!(ui.find("Default export directory").is_err());
+        ui.click("Load settings from Master #1").unwrap();
+        assert!(
+            ui.into_messages()
+                .any(|m| matches!(m, Message::UseSettings(1)))
+        );
+    }
+
+    #[test]
     fn repeated_mastering_keeps_results_and_captures_each_setting() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
-        app.draft.loudness = "-9".into();
+        app.library.draft.loudness = "-9".into();
         app.queue_master().unwrap();
-        app.draft.loudness = "-11".into();
+        app.library.draft.loudness = "-11".into();
         app.queue_master().unwrap();
         assert_eq!(app.library.jobs.len(), 2);
         assert_eq!(app.library.jobs[0].config.loudness, -9.);
         assert_eq!(app.library.jobs[1].config.loudness, -11.);
         assert_eq!(app.library.jobs[0].input, app.library.jobs[1].input);
         assert_ne!(app.library.jobs[0].output, app.library.jobs[1].output);
-        assert_eq!(app.library.settings.loudness, "-11");
-        let before = app.draft.loudness.clone();
+        assert_eq!(app.library.draft.loudness, "-11");
+        let before = app.library.draft.loudness.clone();
         let _ = app.update(Message::Select((0, Some(1))));
-        assert_eq!(app.draft.loudness, before);
+        assert_eq!(app.library.draft.loudness, before);
         assert!(app.output_side);
         let _ = app.update(Message::Side(false));
         assert_eq!(app.selected, Some((0, Some(1))));
         assert!(!app.output_side);
+    }
+    #[test]
+    fn comparing_results_switches_gain_and_audio_without_changing_the_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        app.queue_master().unwrap();
+        app.running = false;
+        for (i, job) in app.library.jobs.iter_mut().enumerate() {
+            job.status = Status::Succeeded;
+            job.analysis = Some(
+                analysis::Analysis::store(
+                    dir.path(),
+                    &serde_json::to_vec(&serde_json::json!({
+                        "loudness": if i == 0 { -12. } else { -9. }, "true_peak": -1.
+                    }))
+                    .unwrap(),
+                )
+                .unwrap(),
+            );
+        }
+        app.library.draft.loudness = "-10".into();
+        let _ = app.update(Message::Select((0, Some(2))));
+        let _ = app.update(Message::Compare(ComparisonChoice { job: Some(1) }));
+        let _ = app.update(Message::Side(false));
+        assert_eq!(app.listening_key(), Some((0, Some(1))));
+        assert!((app.selected_gain() - 10f32.powf(-6. / 20.)).abs() < 0.0001);
+        let _ = app.update(Message::Side(true));
+        assert_eq!(app.listening_key(), Some((0, Some(2))));
+        assert_eq!(app.library.draft.loudness, "-10");
+        assert_eq!(Library::load(dir.path()).unwrap().comparison_job, Some(1));
+        let _ = app.update(Message::Select((0, Some(1))));
+        assert_eq!(app.comparison_job, None);
+        assert_eq!(app.comparison_label(), "Original");
+    }
+
+    #[test]
+    fn queueing_keeps_the_settings_workspace_open_for_the_next_iteration() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let _ = app.update(Message::Compose);
+        app.queue_master().unwrap();
+        assert!(app.show_settings);
+        assert_eq!(app.composer_track, Some(0));
+        app.library.draft.loudness = "-11".into();
+        app.queue_master().unwrap();
+        assert!(app.show_settings);
+        assert_eq!(app.library.jobs[1].config.loudness, -11.);
+        assert_eq!(app.selected, Some((0, None)));
+    }
+
+    #[test]
+    fn complete_backend_log_survives_history_reload_beyond_the_preview_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        let _ = app.start_next();
+        let lines: Vec<_> = (0..550)
+            .map(|i| format!("解析ログ {i}: {}", "x".repeat(2500)))
+            .collect();
+        for line in &lines {
+            let _ = app.update(Message::Backend(1, backend::Update::Line(line.clone())));
+        }
+        let _ = app.update(Message::Backend(1, backend::Update::Cancelled));
+        assert_eq!(app.library.jobs[0].log, lines);
+        let restored = Library::load(dir.path()).unwrap();
+        assert_eq!(restored.jobs[0].log, lines);
+    }
+
+    #[test]
+    fn narrow_settings_keep_transport_and_run_action_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let _ = app.update(Message::Compose);
+        let mut ui = iced_test::Simulator::with_size(
+            Default::default(),
+            iced::Size::new(850., 650.),
+            app.view(),
+        );
+        ui.find("Play").unwrap();
+        ui.find("Next mastering").unwrap();
+        ui.click("Run mastering").unwrap();
+        assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
+    }
+
+    #[test]
+    fn wide_workspace_exposes_analysis_and_next_settings_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_with_track(dir.path());
+        let mut ui = iced_test::Simulator::with_size(
+            Default::default(),
+            iced::Size::new(1280., 800.),
+            app.view(),
+        );
+        ui.find("Next mastering").unwrap();
+        ui.find("Professionality").unwrap();
+        ui.find("Professionality2").unwrap();
+        ui.find("Dissonance").unwrap();
+        assert!(ui.find("Ear Damage").is_err());
+        ui.click("Run mastering").unwrap();
+        assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
+    }
+
+    #[test]
+    fn reference_loading_ignores_previous_selection_and_verifies_saved_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let report = analysis::Analysis::store(dir.path(), br#"{"loudness":-12}"#).unwrap();
+        let path = report.path().unwrap().to_path_buf();
+        app.library.tracks[0].analysis = Some(report);
+        app.library.draft.reference = path.display().to_string();
+        app.queue_master().unwrap();
+        app.running = false;
+        let _ = app.update(Message::Select((0, Some(1))));
+        assert_eq!(app.reference_pending.as_ref(), Some(&path));
+        let _ = app.update(Message::ReferenceLoaded(
+            path.clone(),
+            analysis::Analysis::read_report(path.clone()),
+        ));
+        assert_eq!(
+            app.reference_analysis().unwrap().number("loudness"),
+            Some(-12.)
+        );
+        let _ = app.update(Message::Select((0, None)));
+        let _ = app.update(Message::ReferenceLoaded(
+            path.clone(),
+            analysis::Analysis::read_report(path.clone()),
+        ));
+        assert!(app.reference_analysis().is_none());
+        std::fs::write(&path, br#"{"loudness":-1}"#).unwrap();
+        assert!(analysis::Analysis::read_report(path).is_err());
     }
     #[test]
     fn reference_is_shared_and_survives_source_removal() {
@@ -1225,7 +1528,7 @@ mod tests {
             .path()
             .unwrap()
             .to_path_buf();
-        app.draft.reference = report_path.display().to_string();
+        app.library.draft.reference = report_path.display().to_string();
         app.queue_master().unwrap();
         let job = &app.library.jobs[0];
         assert_eq!(job.config.reference.as_ref().unwrap(), &report_path);

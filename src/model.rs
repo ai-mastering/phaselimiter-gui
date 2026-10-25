@@ -1,3 +1,4 @@
+mod storage;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -134,10 +135,6 @@ pub struct Settings {
     pub low_cut: String,
     pub mastering: bool,
     pub reference: String,
-    pub backend: String,
-    pub ffmpeg: String,
-    pub cache: String,
-    pub output_dir: String,
     pub loudness: String,
     pub intensity: String,
     pub ceiling: String,
@@ -152,35 +149,116 @@ pub struct Settings {
     pub solver: Solver,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppSettings {
+    pub backend: String,
+    pub ffmpeg: String,
+    pub cache: String,
+    #[serde(alias = "output_dir")]
+    pub export_dir: String,
+}
+
+fn default_export_directory() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    [home.join("Downloads"), home.join("Desktop"), home]
+        .into_iter()
+        .find(|p| p.is_dir())
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            backend: String::new(),
+            ffmpeg: String::new(),
+            cache: String::new(),
+            export_dir: default_export_directory().to_string_lossy().into_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionTools {
+    pub backend: PathBuf,
+    pub ffmpeg: String,
+    pub cache: PathBuf,
+}
+
+impl AppSettings {
+    pub fn backend_path(&self) -> PathBuf {
+        if self.backend.trim().is_empty() {
+            bundled_root()
+                .join("phaselimiter/bin")
+                .join(if cfg!(windows) {
+                    "phase_limiter.exe"
+                } else {
+                    "phase_limiter"
+                })
+        } else {
+            PathBuf::from(&self.backend)
+        }
+    }
+
+    pub fn ffmpeg_command(&self) -> String {
+        if self.ffmpeg.trim().is_empty() {
+            bundled_root()
+                .join(if cfg!(windows) {
+                    "ffmpeg.exe"
+                } else {
+                    "ffmpeg"
+                })
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            self.ffmpeg.clone()
+        }
+    }
+
+    pub fn cache_path(&self) -> PathBuf {
+        if self.cache.trim().is_empty() {
+            bundled_root().join("phaselimiter/resource/sound_quality2_cache")
+        } else {
+            PathBuf::from(&self.cache)
+        }
+    }
+
+    pub fn export_directory(&self) -> PathBuf {
+        if self.export_dir.trim().is_empty() {
+            default_export_directory()
+        } else {
+            PathBuf::from(&self.export_dir)
+        }
+    }
+
+    pub fn resolved_tools(&self) -> ExecutionTools {
+        ExecutionTools {
+            backend: self.backend_path(),
+            ffmpeg: self.ffmpeg_command(),
+            cache: self.cache_path(),
+        }
+    }
+}
+
+fn bundled_root() -> PathBuf {
+    let executable = std::env::current_exe().unwrap_or_default();
+    bundled_root_for(&executable)
+}
+
+fn bundled_root_for(executable: &Path) -> PathBuf {
+    let dir = executable.parent().unwrap_or(Path::new("."));
+    if dir.file_name().is_some_and(|n| n == "MacOS") {
+        dir.parent().unwrap_or(dir).join("Resources")
+    } else {
+        dir.to_path_buf()
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
-        let executable = std::env::current_exe().unwrap_or_default();
-        let dir = executable.parent().unwrap_or(Path::new("."));
-        // In a .app, bundled tools/resources live beside the MacOS directory.
-        let root = if dir.file_name().is_some_and(|n| n == "MacOS") {
-            dir.parent().unwrap_or(dir).join("Resources")
-        } else {
-            dir.to_path_buf()
-        };
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        let output = [home.join("Downloads"), home.join("Desktop"), home]
-            .into_iter()
-            .find(|p| p.is_dir())
-            .unwrap_or_else(std::env::temp_dir);
-        let tool = if cfg!(windows) {
-            "phase_limiter.exe"
-        } else {
-            "phase_limiter"
-        };
-        let ffmpeg = if cfg!(windows) {
-            "ffmpeg.exe"
-        } else {
-            "ffmpeg"
-        };
-        let bundled_ffmpeg = root.join(ffmpeg);
         Self {
             mastering: true,
             low_cut: "20".into(),
@@ -193,21 +271,6 @@ impl Default for Settings {
             max_iter2: "400".into(),
             noise_mode: NoiseMode::Linear,
             reference: String::new(),
-            backend: root
-                .join("phaselimiter/bin")
-                .join(tool)
-                .to_string_lossy()
-                .into_owned(),
-            ffmpeg: if bundled_ffmpeg.is_file() {
-                bundled_ffmpeg.to_string_lossy().into_owned()
-            } else {
-                ffmpeg.into()
-            },
-            cache: root
-                .join("phaselimiter/resource/sound_quality2_cache")
-                .to_string_lossy()
-                .into_owned(),
-            output_dir: output.to_string_lossy().into_owned(),
             loudness: "-9".into(),
             intensity: "1".into(),
             ceiling: "0".into(),
@@ -248,10 +311,6 @@ pub struct Config {
     pub mastering: bool,
     #[serde(default)]
     pub reference: Option<PathBuf>,
-    pub backend: PathBuf,
-    pub ffmpeg: String,
-    pub cache: PathBuf,
-    pub output_dir: PathBuf,
     pub loudness: f64,
     pub intensity: f64,
     pub ceiling: f64,
@@ -283,16 +342,6 @@ impl Settings {
                 .parse()
                 .map_err(|_| format!("{label}: enter a non-negative integer."))
         }
-        if self.backend.trim().is_empty()
-            || self.ffmpeg.trim().is_empty()
-            || self.cache.trim().is_empty()
-        {
-            return Err("Set the backend, FFmpeg and sound-quality cache paths.".into());
-        }
-        let output_dir = PathBuf::from(&self.output_dir);
-        if !output_dir.is_dir() {
-            return Err("Output directory must already exist.".into());
-        }
         let sample_rate = integer(&self.sample_rate, "Sample rate")?;
         if !(8000..=192000).contains(&sample_rate) {
             return Err("Sample rate: use 8000 to 192000 Hz.".into());
@@ -317,10 +366,6 @@ impl Settings {
             low_cut: number(&self.low_cut, "low_cut", 0.0, 22050.0)?,
             mastering: self.mastering,
             reference: (!self.reference.is_empty()).then(|| PathBuf::from(&self.reference)),
-            backend: PathBuf::from(&self.backend),
-            ffmpeg: self.ffmpeg.clone(),
-            cache: PathBuf::from(&self.cache),
-            output_dir,
             loudness: number(&self.loudness, "Target loudness", -60.0, 0.0)?,
             intensity: number(&self.intensity, "Mastering intensity", 0.0, 1.0)?,
             ceiling: number(&self.ceiling, "True-peak ceiling", -20.0, 0.0)?,
@@ -396,6 +441,7 @@ impl std::fmt::Display for Status {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "storage::SavedJob")]
 pub struct Job {
     #[serde(default)]
     pub command: Option<String>,
@@ -417,6 +463,7 @@ pub struct Job {
     pub input: PathBuf,
     pub output: PathBuf,
     pub config: Config,
+    pub tools: ExecutionTools,
     pub status: Status,
     pub progress: f32,
     pub log: Vec<String>,
@@ -430,6 +477,7 @@ pub fn test_job(input: PathBuf, output: PathBuf, config: Config, id: usize) -> J
         input,
         output,
         config,
+        tools: AppSettings::default().resolved_tools(),
         status: Status::Waiting,
         progress: 0.,
         log: Vec::new(),
@@ -488,9 +536,7 @@ mod tests {
     use super::*;
     #[test]
     fn validates_filter_and_limiter_contracts() {
-        let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings {
-            output_dir: dir.path().display().to_string(),
             ..Settings::default()
         };
         assert!(settings.parse().unwrap().preserve_bass);
@@ -510,10 +556,69 @@ mod tests {
     }
 
     #[test]
+    fn blank_tool_overrides_resolve_at_use_time_without_becoming_saved_paths() {
+        let settings = AppSettings {
+            ..AppSettings::default()
+        };
+        let config = settings.resolved_tools();
+        assert_eq!(config.backend, settings.backend_path());
+        assert_eq!(config.ffmpeg, settings.ffmpeg_command());
+        assert_eq!(config.cache, settings.cache_path());
+        assert!(!config.backend.as_os_str().is_empty());
+        assert!(config.backend.starts_with(bundled_root()));
+        assert!(Path::new(&config.ffmpeg).starts_with(bundled_root()));
+        assert!(config.cache.starts_with(bundled_root()));
+        let saved = serde_json::to_value(&settings).unwrap();
+        for field in ["backend", "ffmpeg", "cache"] {
+            assert_eq!(saved[field], "");
+        }
+        let restored: AppSettings = serde_json::from_value(saved).unwrap();
+        assert_eq!(restored.backend_path(), config.backend);
+    }
+
+    #[test]
+    fn explicit_tool_overrides_are_used_even_when_the_files_do_not_exist() {
+        let mut settings = AppSettings {
+            backend: "missing custom engine".into(),
+            ffmpeg: "ffmpeg".into(),
+            cache: "custom cache".into(),
+            ..AppSettings::default()
+        };
+        assert_eq!(
+            settings.backend_path(),
+            PathBuf::from("missing custom engine")
+        );
+        assert_eq!(settings.ffmpeg_command(), "ffmpeg");
+        assert_eq!(settings.cache_path(), PathBuf::from("custom cache"));
+        settings.ffmpeg.clear();
+        assert_eq!(
+            settings.backend_path(),
+            PathBuf::from("missing custom engine")
+        );
+        assert!(Path::new(&settings.ffmpeg_command()).starts_with(bundled_root()));
+    }
+
+    #[test]
+    fn bundled_resources_follow_the_current_executable_directory() {
+        assert_eq!(
+            bundled_root_for(Path::new("version-a/phaselimiter-gui")),
+            PathBuf::from("version-a")
+        );
+        assert_eq!(
+            bundled_root_for(Path::new("version-b/phaselimiter-gui.exe")),
+            PathBuf::from("version-b")
+        );
+        assert_eq!(
+            bundled_root_for(Path::new(
+                "version-c/Phaselimiter.app/Contents/MacOS/phaselimiter-gui"
+            )),
+            PathBuf::from("version-c/Phaselimiter.app/Contents/Resources")
+        );
+    }
+
+    #[test]
     fn old_saved_configs_receive_backend_defaults() {
-        let dir = tempfile::tempdir().unwrap();
         let settings = Settings {
-            output_dir: dir.path().display().to_string(),
             ..Settings::default()
         };
         let mut value = serde_json::to_value(settings.parse().unwrap()).unwrap();

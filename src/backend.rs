@@ -27,8 +27,11 @@ pub fn arguments(job: &Job) -> Vec<OsString> {
     };
     flag("input", job.input.clone().into_os_string());
     flag("output", job.output.clone().into_os_string());
-    flag("ffmpeg", c.ffmpeg.clone().into());
-    flag("sound_quality2_cache", c.cache.clone().into_os_string());
+    flag("ffmpeg", job.tools.ffmpeg.clone().into());
+    flag(
+        "sound_quality2_cache",
+        job.tools.cache.clone().into_os_string(),
+    );
     if let Some(reference) = &c.reference {
         flag(
             "mastering5_mastering_reference_file",
@@ -154,7 +157,7 @@ async fn execute(
         Ok(dir) => dir,
         Err(e) => return Update::Finished(Err(format!("Creating temporary directory: {e}"))),
     };
-    let mut command = tokio::process::Command::new(&job.config.backend);
+    let mut command = tokio::process::Command::new(&job.tools.backend);
     command
         .args(arguments(job))
         .arg("--tmp")
@@ -179,7 +182,7 @@ async fn execute(
         Err(e) => {
             return Update::Finished(Err(format!(
                 "Could not start {}: {e}",
-                job.config.backend.display()
+                job.tools.backend.display()
             )));
         }
     };
@@ -225,11 +228,7 @@ async fn execute(
         if let Some(value) = progress(&line) {
             let _ = sender.send(Update::Progress(value)).await;
         }
-        if sender
-            .send(Update::Line(line.chars().take(2000).collect()))
-            .await
-            .is_err()
-        {
+        if sender.send(Update::Line(line)).await.is_err() {
             return Update::Cancelled;
         }
     }
@@ -263,7 +262,6 @@ mod tests {
     fn passes_processing_choices_and_one_shared_mastering_level() {
         let dir = tempfile::tempdir().unwrap();
         let settings = crate::model::Settings {
-            output_dir: dir.path().display().to_string(),
             mastering: false,
             intensity: "0.3".into(),
             noise_mode: crate::model::NoiseMode::Adaptive,
@@ -314,12 +312,14 @@ mod tests {
         std::fs::set_permissions(&backend, std::fs::Permissions::from_mode(0o755)).unwrap();
         let input = dir.join("日本語 input.wav");
         std::fs::write(&input, b"audio").unwrap();
-        let settings = crate::model::Settings {
-            backend: backend.to_string_lossy().into_owned(),
-            output_dir: dir.to_string_lossy().into_owned(),
-            ..crate::model::Settings::default()
-        };
-        crate::model::test_job(input, dir.join("output.wav"), settings.parse().unwrap(), 0)
+        let mut job = crate::model::test_job(
+            input,
+            dir.join("output.wav"),
+            crate::model::Settings::default().parse().unwrap(),
+            0,
+        );
+        job.tools.backend = backend;
+        job
     }
 
     #[cfg(unix)]
@@ -355,6 +355,21 @@ mod tests {
         assert!(captured.contains("日本語 input.wav"));
         assert!(captured.contains("'--tmp'"));
         assert!(captured.contains("phaselimiter-"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preserves_long_unicode_log_lines_without_truncation() {
+        use iced::futures::StreamExt;
+        let dir = tempfile::tempdir().unwrap();
+        let line = "解析ログ".repeat(800);
+        let job = fake_job(&format!("printf '%s\\n' '{line}'; exit 7"), dir.path());
+        let updates: Vec<_> = run(job, Arc::new(AtomicBool::new(false))).collect().await;
+        assert!(
+            updates
+                .iter()
+                .any(|update| matches!(update, Update::Line(value) if value == &line))
+        );
     }
 
     #[cfg(unix)]
