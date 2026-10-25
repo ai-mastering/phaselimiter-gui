@@ -12,7 +12,7 @@ import sys
 import tarfile
 import zipfile
 
-from audio_common import Build, PINS, ROOT, digest, run
+from audio_common import Build, PINS, ROOT, digest, download, run
 from bundle_runtime import TOOLS, audit, collect
 
 
@@ -46,9 +46,9 @@ def source_archive(build, destination):
     """One Linux job publishes sources/build scripts for all four native builds."""
     with tarfile.open(destination, "w:gz") as archive:
         for asset in PINS["sources"].values():
-            path = build.downloads / asset["filename"]
-            if not path.is_file() or digest(path) != asset["sha256"]:
-                raise ValueError(f"Missing corresponding source: {path}")
+            # A binary-cache hit skips the dependency build that normally
+            # downloads these archives. Still publish all corresponding sources.
+            path = download(asset, build.downloads)
             archive.add(path, arcname="downloads/" + path.name)
         files = subprocess.check_output(["git", "ls-files", "--recurse-submodules", "-z"],
                                         cwd=build.backend).decode().split("\0")
