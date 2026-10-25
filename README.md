@@ -119,7 +119,11 @@ export SDKROOT=/tmp/phaselimiter-official-sdk/MacOSX.sdk
 bash script/build-macos.sh
 ```
 
-Keep the extracted SDK outside the repository. `.local-sdk/`, `target/` and `dist/` are ignored by Git. A local cross-build cannot verify macOS windowing behavior; run the result on your Mac. Apple Silicon GUI builds can use `MACOS_TARGET=aarch64-apple-darwin`. The complete CI distribution builds and tests the ARM backend natively.
+Keep the extracted SDK outside the repository. `.local-sdk/`, `target/` and `dist/` are ignored by Git.
+
+Build and packaging scripts honor `CARGO_TARGET_DIR` and Cargo's configured target directory. In the root-user Linux devcontainer, set `export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/root/.cache/phaselimiter-target}"` before running Cargo or build/packaging scripts, keeping build artifacts off the shared workspace. For the executable inspection commands in this document, replace `target/` with that directory when overridden.
+
+A local cross-build cannot verify macOS windowing behavior; run the result on your Mac. Apple Silicon GUI builds can use `MACOS_TARGET=aarch64-apple-darwin`. The complete CI distribution builds and tests the ARM backend natively.
 
 ## Tests and CI
 

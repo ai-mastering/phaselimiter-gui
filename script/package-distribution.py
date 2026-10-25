@@ -13,7 +13,7 @@ import zipfile
 
 from audio_common import Build, PINS, ROOT, digest, download, run
 from bundle_runtime import TOOLS, audit, collect
-from package_common import write_macos_plist
+from package_common import cargo_target_directory, write_macos_plist
 
 
 def notices(build, stage):
@@ -106,7 +106,7 @@ def package(build, target, sources=False):
                 output.flush()
                 run(["readelf", "--version-info", path], stdout=output)
     # Existing standalone GUI packagers remain available for development builds.
-    gui = ROOT / "target" / target / "release" / ("phaselimiter-gui" + suffix)
+    gui = cargo_target_directory() / target / "release" / ("phaselimiter-gui" + suffix)
     destination = ROOT / "dist" / target
     destination.mkdir(parents=True, exist_ok=True)
     payload = destination / ("Phaselimiter.app" if build.is_mac else "Phaselimiter")

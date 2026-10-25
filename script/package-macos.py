@@ -6,11 +6,11 @@ import subprocess
 import sys
 import zipfile
 
-from package_common import write_macos_plist
+from package_common import cargo_target_directory, write_macos_plist
 
 root = pathlib.Path(__file__).resolve().parent.parent
 target = sys.argv[1] if len(sys.argv) > 1 else "x86_64-apple-darwin"
-binary = root / "target" / target / "release" / "phaselimiter-gui"
+binary = cargo_target_directory() / target / "release" / "phaselimiter-gui"
 if not binary.is_file():
     raise SystemExit(f"Build the executable first: {binary}")
 destination = root / "dist" / target

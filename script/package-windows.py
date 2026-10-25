@@ -6,9 +6,11 @@ import subprocess
 import sys
 import zipfile
 
+from package_common import cargo_target_directory
+
 root = pathlib.Path(__file__).resolve().parent.parent
 target = "x86_64-pc-windows-msvc"
-binary = root / "target" / target / "release" / "phaselimiter-gui.exe"
+binary = cargo_target_directory() / target / "release" / "phaselimiter-gui.exe"
 if not binary.is_file():
     raise SystemExit(f"Build the executable first: {binary}")
 destination = root / "dist" / target

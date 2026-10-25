@@ -1,9 +1,20 @@
 """Shared metadata for standalone and complete application bundles."""
+import json
 import plistlib
+import subprocess
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def cargo_target_directory():
+    """Use Cargo's configured output directory, including environment overrides."""
+    metadata = subprocess.check_output(
+        ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'],
+        cwd=ROOT, text=True,
+    )
+    return Path(json.loads(metadata)['target_directory'])
 
 
 def write_macos_plist(app):

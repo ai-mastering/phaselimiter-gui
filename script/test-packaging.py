@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -192,6 +193,35 @@ class MacMetadata(unittest.TestCase):
             self.assertEqual(info['CFBundleShortVersionString'], package['version'])
             self.assertEqual(info['CFBundleVersion'], package['metadata']['macos']['bundle-version'])
             self.assertEqual(info['LSMinimumSystemVersion'], package['metadata']['macos']['minimum-system-version'])
+
+
+class CargoOutputDirectory(unittest.TestCase):
+    def test_packaging_follows_cargo_configuration_and_environment_without_building(self):
+        import package_common
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / 'gui'
+            (project / '.cargo').mkdir(parents=True)
+            (project / 'src').mkdir()
+            (project / 'src/main.rs').write_text('fn main() {}')
+            (project / 'Cargo.toml').write_text(
+                '[package]\nname = "output-directory-test"\nversion = "0.1.0"\nedition = "2021"\n')
+            subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=project, check=True)
+            configured = root / 'configured output'
+            (project / '.cargo/config.toml').write_text(
+                '[build]\ntarget-dir = ' + repr(str(configured)) + '\n')
+            environment = {key: value for key, value in os.environ.items()
+                           if key not in ('CARGO_TARGET_DIR', 'CARGO_BUILD_TARGET_DIR')}
+            for override, expected in [(None, configured),
+                                       (str(root / 'external output'), root / 'external output'),
+                                       ('relative output', project / 'relative output')]:
+                with self.subTest(override=override), patch.dict(os.environ, environment, clear=True), \
+                        patch.object(package_common, 'ROOT', project):
+                    if override is not None:
+                        os.environ['CARGO_TARGET_DIR'] = override
+                    self.assertEqual(package_common.cargo_target_directory(), expected)
+                    self.assertFalse(expected.exists())
+                    self.assertFalse((project / 'target').exists())
 
 
 if __name__ == '__main__':

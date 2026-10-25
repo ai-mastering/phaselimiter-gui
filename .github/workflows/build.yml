@@ -28,6 +28,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: '14.0'
       PYTHONUTF8: '1'
       CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

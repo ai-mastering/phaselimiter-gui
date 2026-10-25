@@ -12,6 +12,9 @@ RUN apt-get update \
 
 WORKDIR /workspace
 
+# Keep Cargo artifacts on the container filesystem, off the host bind mount.
+ENV CARGO_TARGET_DIR=/root/.cache/phaselimiter-target
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gdb jq procps ripgrep tmux \
     && rm -rf /var/lib/apt/lists/*
