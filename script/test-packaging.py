@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Source integrity and archive extraction contracts for the packaging pipeline."""
 import hashlib
+import importlib.util
 import io
 from pathlib import Path
 import tarfile
@@ -13,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import zipfile
 
-from audio_common import download, extract_tar
+from audio_common import digest, download, extract_tar
 import bundle_runtime
 from bundle_runtime import audit, collect
 
@@ -139,6 +140,38 @@ class WindowsArchive(unittest.TestCase):
                 shutil.rmtree(stage / 'phaselimiter/bin')
                 with self.assertRaises(FileNotFoundError):
                     audit(stage)
+
+
+class CorrespondingSources(unittest.TestCase):
+    def test_binary_cache_hit_still_downloads_all_corresponding_sources(self):
+        spec = importlib.util.spec_from_file_location('distribution', Path(__file__).with_name('package-distribution.py'))
+        distribution = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(distribution)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'library-source.tar.gz'
+            with tarfile.open(source, 'w:gz') as archive:
+                item = tarfile.TarInfo('library/README')
+                item.size = 6
+                archive.addfile(item, io.BytesIO(b'source'))
+            backend = root / 'backend'
+            subprocess.run(['git', 'init', '-q', str(backend)], check=True)
+            (backend / 'README.md').write_text('backend source')
+            subprocess.run(['git', '-C', str(backend), 'add', 'README.md'], check=True)
+            gui = root / 'gui'
+            for name in ('src', 'script', 'packaging', '.cargo', '.github'):
+                (gui / name).mkdir(parents=True)
+            for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'LICENSE', 'README.md'):
+                (gui / name).write_text('source snapshot')
+            pins = {'backend': {'revision': 'a' * 40}, 'sources': {'library': {
+                'filename': source.name, 'url': source.as_uri(), 'sha256': digest(source)}}}
+            build = SimpleNamespace(downloads=root / 'empty-download-cache', backend=backend)
+            output = root / 'corresponding-sources.tar.gz'
+            with patch.object(distribution, 'PINS', pins), patch.object(distribution, 'ROOT', gui):
+                distribution.source_archive(build, output)
+            with tarfile.open(output) as archive:
+                self.assertEqual(archive.extractfile('downloads/' + source.name).read(), source.read_bytes())
+                self.assertEqual(archive.extractfile('backend/SOURCE-REVISION').read(), b'a' * 40 + b'\n')
 
 
 if __name__ == '__main__':

@@ -27,6 +27,7 @@ jobs:
       BUILD_JOBS: '2'
       MACOSX_DEPLOYMENT_TARGET: '14.0'
       PYTHONUTF8: '1'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -83,34 +84,100 @@ jobs:
           ref: ${{ steps.backend.outputs.revision }}
           path: build/audio/backend
           submodules: recursive
-      - uses: actions/cache@v4
-        with:
-          path: build/audio/downloads
-          key: audio-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packaging/audio-sources.json') }}
-      - name: Packaging contracts
-        run: python script/test-packaging.py -v
       - name: Install pinned Rust toolchain
         run: rustup show
+      - name: Fingerprint native libraries and Rust caches
+        id: native-keys
+        run: python script/audio-cache.py dependencies --target ${{ matrix.target }}
+      - name: Restore source downloads
+        uses: actions/cache@v4
+        with:
+          path: build/audio/downloads
+          key: ${{ steps.native-keys.outputs.sources-key }}
+      - name: Restore Rust dependencies and build outputs
+        id: rust-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.native-keys.outputs.cargo-home }}/registry/cache
+            ${{ steps.native-keys.outputs.cargo-home }}/registry/index
+            ${{ steps.native-keys.outputs.cargo-home }}/git
+            target
+          key: ${{ steps.native-keys.outputs.rust-key }}
+      - name: Discard restored GUI artifacts (host)
+        if: steps.rust-cache.outputs.cache-hit == 'true'
+        run: cargo clean --workspace
+      - name: Discard restored GUI artifacts (distribution target)
+        if: steps.rust-cache.outputs.cache-hit == 'true'
+        run: cargo clean --workspace --target ${{ matrix.target }}
+      - name: Packaging contracts
+        run: python script/test-packaging.py -v
+      - name: Cache key contracts
+        run: python script/test-audio-cache.py -v
       - name: GUI format
         run: cargo fmt --check
       - name: GUI tests
         run: cargo test --locked
       - name: GUI release build
         run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Save Rust cache before audio builds and integration tests
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ steps.native-keys.outputs.cargo-home }}/registry/cache
+            ${{ steps.native-keys.outputs.cargo-home }}/registry/index
+            ${{ steps.native-keys.outputs.cargo-home }}/git
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Real X11 file drop
         if: runner.os == 'Linux'
         run: xvfb-run -a python script/test-x11-drop.py target/${{ matrix.target }}/release/phaselimiter-gui
-      - name: Build LGPL FFmpeg, LAME and zlib (Unix)
+      - name: Fingerprint Unix FFmpeg cache
         if: runner.os != 'Windows'
+        id: ffmpeg-key-unix
+        run: python script/audio-cache.py ffmpeg --target ${{ matrix.target }}
+      - name: Fingerprint MinGW FFmpeg cache
+        if: runner.os == 'Windows'
+        id: ffmpeg-key-windows
+        shell: msys2 {0}
+        run: python script/audio-cache.py ffmpeg --target ${{ matrix.target }}
+      - name: Restore built FFmpeg tools
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/audio/ffmpeg-prefix/bin
+          key: ${{ steps.ffmpeg-key-unix.outputs.key || steps.ffmpeg-key-windows.outputs.key }}
+      - name: Build LGPL FFmpeg, LAME and zlib (Unix)
+        if: runner.os != 'Windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: bash script/build-ffmpeg.sh
       - name: Build LGPL FFmpeg, LAME and zlib (MinGW)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: msys2 {0}
         env:
           PYTHON: python
         run: bash script/build-ffmpeg.sh
+      - name: Save FFmpeg cache before backend builds and tests
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/audio/ffmpeg-prefix/bin
+          key: ${{ steps.ffmpeg-cache.outputs.cache-primary-key }}
+      - name: Restore built backend libraries
+        id: library-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/audio/prefix
+          key: ${{ steps.native-keys.outputs.key }}
       - name: Build backend libraries
+        if: steps.library-cache.outputs.cache-hit != 'true'
         run: python script/build-audio.py dependencies
+      - name: Save libraries before backend installation modifies the prefix
+        if: steps.library-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/audio/prefix
+          key: ${{ steps.library-cache.outputs.cache-primary-key }}
       - name: Build phaselimiter
         run: python script/build-audio.py backend
       - name: Backend CLI and component tests
