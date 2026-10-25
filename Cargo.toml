@@ -17,6 +17,7 @@ dirs = "7.0.0"
 miniaudio = { package = "om-fork-miniaudio", version = "0.12.2", default-features = false, features = ["bindgen", "ma-log-level-error", "ma-no-null"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 fs2 = "0.4.3"
+rtrb = "0.4.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -87,7 +87,7 @@ enum Message {
     ClearRegion,
     Equalize(bool),
     Tick,
-    Prepared(u64, PathBuf, Result<Arc<playback::Decoded>, String>),
+    Prepared(PathBuf, Result<Arc<playback::Decoded>, String>),
     Graph(plots::Kind),
     Details,
     StorageSize(u64),
@@ -127,10 +127,11 @@ struct App {
     finalizing: HashSet<usize>,
     player: playback::Player,
     prepared: HashMap<PathBuf, Arc<playback::Decoded>>,
-    generation: u64,
+    warming: HashSet<PathBuf>,
+    prepared_order: VecDeque<PathBuf>,
     loading: bool,
     loaded: bool,
-    play_requested: bool,
+    active_key: Option<AudioKey>,
     equalize: bool,
     region: Option<(f64, f64)>,
     position: f64,
@@ -165,11 +166,12 @@ impl Default for App {
             importing: 0,
             player: playback::Player::default(),
             prepared: HashMap::new(),
-            generation: 0,
+            warming: HashSet::new(),
+            prepared_order: VecDeque::new(),
             finalizing: HashSet::new(),
             loading: false,
             loaded: false,
-            play_requested: false,
+            active_key: None,
             equalize: true,
             region: None,
             position: 0.,
@@ -296,9 +298,9 @@ impl App {
             self.track()?.analysis.as_ref()
         }
     }
-    fn update_gain(&self) {
+    fn selected_gain(&self) -> f32 {
         // One fixed target for every item; never normalize against the last selected item.
-        let gain = if self.equalize {
+        if self.equalize {
             self.listening_analysis()
                 .and_then(|a| Some((a.number("loudness")?, a.number("true_peak")?)))
                 .map_or(1., |(loudness, peak)| {
@@ -306,25 +308,33 @@ impl App {
                 })
         } else {
             1.
-        };
-        self.player.gain(gain);
+        }
     }
-    fn prepare(&mut self) -> Task<Message> {
-        self.generation += 1;
-        self.player.pause();
-        self.loaded = false;
-        self.loading = false;
-        let Some(key) = self.listening_key() else {
+    fn update_gain(&self) {
+        if !self.loading && self.listening_key() == self.active_key {
+            self.player.gain(self.selected_gain());
+        }
+    }
+    fn activate(&mut self, audio: Arc<playback::Decoded>) {
+        match self.player.load(audio, self.selected_gain()) {
+            Ok(()) => {
+                self.loaded = true;
+                self.active_key = self.listening_key();
+                self.loading = false;
+                self.player.region(self.region);
+            }
+            Err(error) => {
+                self.loading = false;
+                self.error = Some(error);
+            }
+        }
+    }
+    fn request_decode(&mut self, path: PathBuf, hash: String) -> Task<Message> {
+        if !self.warming.insert(path.clone()) {
             return Task::none();
-        };
-        let Some((path, hash)) = self.audio(key) else {
-            return Task::none();
-        };
-        self.loading = true;
-        // Verify the snapshot on every use, including a decoded-cache hit.
+        }
         let cached = self.prepared.get(&path).cloned();
         let ffmpeg = self.draft.ffmpeg.clone();
-        let generation = self.generation;
         let message_path = path.clone();
         Task::perform(
             async move {
@@ -337,9 +347,57 @@ impl App {
                     playback::decode(path, hash, ffmpeg).await
                 }
             },
-            move |result| Message::Prepared(generation, message_path.clone(), result),
+            move |result| Message::Prepared(message_path.clone(), result),
         )
     }
+    fn warm_selection(&mut self) -> Task<Message> {
+        let Some((track, _)) = self.selected else {
+            return Task::none();
+        };
+        let mut keys = vec![(track, None)];
+        keys.extend(
+            self.library
+                .jobs
+                .iter()
+                .rev()
+                .filter(|j| j.track_id == track && j.status == Status::Succeeded)
+                .take(7)
+                .map(|j| (track, Some(j.id))),
+        );
+        let mut tasks = Vec::new();
+        for key in keys {
+            if let Some((path, hash)) = self.audio(key)
+                && !self.prepared.contains_key(&path)
+            {
+                tasks.push(self.request_decode(path, hash));
+            }
+        }
+        Task::batch(tasks)
+    }
+    fn prepare(&mut self) -> Task<Message> {
+        self.loading = false;
+        let Some(key) = self.listening_key() else {
+            return Task::none();
+        };
+        let Some((path, hash)) = self.audio(key) else {
+            self.notice =
+                Some("Selected result is not ready. Current playback is unchanged.".into());
+            return Task::none();
+        };
+        self.loading = true;
+        if let Some(audio) = self.prepared.get(&path).cloned()
+            && audio.unchanged(&path)
+        {
+            self.prepared_order.retain(|p| p != &path);
+            self.prepared_order.push_back(path);
+            self.activate(audio);
+            return self.warm_selection();
+        }
+        let task = self.request_decode(path, hash);
+        let warm = self.warm_selection();
+        Task::batch([task, warm])
+    }
+
     fn import(&mut self, path: PathBuf) -> Task<Message> {
         self.hovering = false;
         let Some(root) = self.root.clone() else {
@@ -511,6 +569,8 @@ impl App {
                 match result {
                     Ok(track) => {
                         let key = (track.id, None);
+                        let warm = self.request_decode(track.input.clone(), track.hash.clone());
+                        tasks.push(warm);
                         self.library.tracks.push(track);
                         self.analysis_queue.push_back(key);
                         self.notice =
@@ -576,8 +636,6 @@ impl App {
                 }
             }
             Message::Select(key) => {
-                self.play_requested =
-                    self.player.status().2 || (self.loading && self.play_requested);
                 self.selected = Some(key);
                 self.output_side = key.1.is_some();
                 self.error = None;
@@ -644,9 +702,8 @@ impl App {
                         self.selected = None;
                         self.player.pause();
                         self.loaded = false;
+                        self.active_key = None;
                         self.loading = false;
-                        self.play_requested = false;
-                        self.generation += 1;
                     }
                     // Save the manifest before removing the owned files.
                     if !self.save() {
@@ -737,6 +794,7 @@ impl App {
                         }
                     }
                 }
+                tasks.push(self.warm_selection());
                 save = true;
             }
             Message::Analyzed(key, result) => {
@@ -776,8 +834,6 @@ impl App {
                 }
             }
             Message::Side(output) => {
-                self.play_requested =
-                    self.player.status().2 || (self.loading && self.play_requested);
                 self.output_side = output;
                 tasks.push(self.prepare());
                 save = true;
@@ -785,10 +841,9 @@ impl App {
             Message::Play => {
                 if self.player.status().2 {
                     self.player.pause();
-                    self.play_requested = false;
                 } else if self.loaded {
                     match self.player.play() {
-                        Ok(()) => self.play_requested = true,
+                        Ok(()) => {}
                         Err(e) => self.error = Some(e),
                     }
                 }
@@ -816,29 +871,37 @@ impl App {
                     self.error = Some(e)
                 }
             }
-            Message::Prepared(generation, path, result) => {
-                if generation != self.generation {
-                    return Task::none();
-                }
-                self.loading = false;
+            Message::Prepared(path, result) => {
+                self.warming.remove(&path);
+                let wanted = self
+                    .listening_key()
+                    .and_then(|key| self.audio(key))
+                    .is_some_and(|(p, _)| p == path);
                 match result {
                     Ok(audio) => {
-                        if self.prepared.len() >= 4 {
-                            self.prepared.clear();
-                        }
-                        self.prepared.insert(path, audio.clone());
-                        match self.player.load(audio, self.play_requested) {
-                            Ok(()) => {
-                                self.loaded = true;
-                                self.player.region(self.region);
-                                self.update_gain();
+                        let registered = self.library.tracks.iter().any(|t| t.input == path)
+                            || self.library.jobs.iter().any(|j| j.output == path);
+                        if registered {
+                            self.prepared_order.retain(|p| p != &path);
+                            self.prepared_order.push_back(path.clone());
+                            self.prepared.insert(path, audio.clone());
+                            while self.prepared_order.len() > 8 {
+                                if let Some(old) = self.prepared_order.pop_front() {
+                                    self.prepared.remove(&old);
+                                }
                             }
-                            Err(e) => self.error = Some(e),
+                            if wanted {
+                                self.activate(audio);
+                            } else {
+                                self.player.warm(audio);
+                            }
                         }
                     }
-                    Err(e) => {
-                        self.play_requested = false;
-                        self.error = Some(e)
+                    Err(error) => {
+                        if wanted {
+                            self.loading = false;
+                            self.error = Some(error);
+                        }
                     }
                 }
             }
@@ -1057,6 +1120,37 @@ mod tests {
         app.library.next_id = 1;
         app.selected = Some((0, None));
         app
+    }
+    #[test]
+    fn ready_cache_selection_does_not_enter_preparing_or_discard_other_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let path = app.library.tracks[0].input.clone();
+        let audio = playback::test_audio(&[[0.2; 2]; 1000], Some(&path));
+        app.prepared.insert(path.clone(), audio);
+        app.prepared_order.push_back(path.clone());
+        let _ = app.prepare();
+        assert!(app.loaded);
+        assert!(!app.loading);
+        assert!(app.warming.is_empty());
+        assert!(app.prepared.contains_key(&path));
+    }
+    #[test]
+    fn background_preparation_does_not_switch_the_selected_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let source = dir.path().join("other.wav");
+        std::fs::write(&source, b"other audio").unwrap();
+        let track = library::import(dir.path(), source, 1).unwrap();
+        let path = track.input.clone();
+        app.library.tracks.push(track);
+        let audio = playback::test_audio(&[[0.5; 2]; 1000], Some(&path));
+        app.loading = true;
+        let _ = app.update(Message::Prepared(path.clone(), Ok(audio)));
+        assert_eq!(app.selected, Some((0, None)));
+        assert!(!app.loaded);
+        assert!(app.loading);
+        assert!(app.prepared.contains_key(&path));
     }
     #[test]
     fn browsing_history_does_not_retarget_an_open_mastering_form() {

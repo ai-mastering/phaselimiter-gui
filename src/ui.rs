@@ -154,7 +154,8 @@ impl App {
                 );
             }
             if self.loading {
-                detail = detail.push(text("Preparing audio…").size(12));
+                detail = detail
+                    .push(text("Preparing selection… Current audio continues playing.").size(12));
             }
             detail = detail.push(
                 row![

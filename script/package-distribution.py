@@ -123,7 +123,7 @@ def package(build, target, sources=False):
         with (payload / "Contents/Info.plist").open("wb") as output:
             plistlib.dump({"CFBundleExecutable": "phaselimiter-gui", "CFBundleIdentifier": "com.aimastering.phaselimiter-gui",
                           "CFBundleName": "Phaselimiter", "CFBundlePackageType": "APPL",
-                          "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "3",
+                          "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "4",
                           "LSMinimumSystemVersion": "14.0", "NSHighResolutionCapable": True}, output)
         run(["codesign", "--force", "--sign", "-", payload])
         run(["codesign", "--verify", "--deep", "--strict", payload])
