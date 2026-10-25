@@ -732,7 +732,6 @@ impl App {
         column![
             rule::horizontal(1),
             text(format!("Changes from Master #{}", job.id)).size(13),
-            text("Recorded → next run").size(11),
             scrollable(changes).spacing(4).height(height),
             button(text(format!("Load settings from Master #{}", job.id)).size(12))
                 .on_press(Message::UseSettings(job.id))
