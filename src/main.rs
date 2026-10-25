@@ -7,6 +7,7 @@ mod library;
 mod model;
 mod playback;
 mod plots;
+mod preparation;
 mod ui;
 
 use iced::widget::{
@@ -17,16 +18,13 @@ use iced::{Element, Fill, Subscription, Task, Theme};
 use library::{Library, Track};
 use model::{Format, Job, Settings, Solver, Status};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
-
-// Decoded files are disk-backed; RAM prefetch has a separate mixer limit.
-const PCM_CACHE_ENTRIES: usize = 100;
 
 type AudioKey = (usize, Option<usize>);
 fn main() -> iced::Result {
@@ -133,9 +131,7 @@ struct App {
     importing: usize,
     finalizing: HashSet<usize>,
     player: playback::Player,
-    prepared: HashMap<PathBuf, Arc<playback::Decoded>>,
-    warming: HashSet<PathBuf>,
-    prepared_order: VecDeque<PathBuf>,
+    prepared: preparation::Cache,
     loading: bool,
     loaded: bool,
     active_key: Option<AudioKey>,
@@ -173,9 +169,7 @@ impl Default for App {
             analyzing: None,
             importing: 0,
             player: playback::Player::default(),
-            prepared: HashMap::new(),
-            warming: HashSet::new(),
-            prepared_order: VecDeque::new(),
+            prepared: preparation::Cache::default(),
             finalizing: HashSet::new(),
             loading: false,
             loaded: false,
@@ -315,117 +309,6 @@ impl App {
             Some((track.input.clone(), track.hash.clone()))
         }
     }
-    fn listening_key(&self) -> Option<AudioKey> {
-        let (track, job) = self.selected?;
-        Some((track, if self.output_side { job } else { None }))
-    }
-    fn listening_analysis(&self) -> Option<&analysis::Analysis> {
-        if self.output_side && self.job().is_some() {
-            self.job()?.analysis.as_ref()
-        } else {
-            self.track()?.analysis.as_ref()
-        }
-    }
-    fn selected_gain(&self) -> f32 {
-        // One fixed target for every item; never normalize against the last selected item.
-        if self.equalize {
-            self.listening_analysis()
-                .and_then(|a| Some((a.number("loudness")?, a.number("true_peak")?)))
-                .map_or(1., |(loudness, peak)| {
-                    10f64.powf((-18. - loudness).min(-1. - peak).clamp(-60., 24.) / 20.) as f32
-                })
-        } else {
-            1.
-        }
-    }
-    fn update_gain(&self) {
-        if !self.loading && self.listening_key() == self.active_key {
-            self.player.gain(self.selected_gain());
-        }
-    }
-    fn activate(&mut self, audio: Arc<playback::Decoded>) {
-        match self.player.load(audio, self.selected_gain()) {
-            Ok(()) => {
-                self.loaded = true;
-                self.active_key = self.listening_key();
-                self.loading = false;
-                self.player.region(self.region);
-            }
-            Err(error) => {
-                self.loading = false;
-                self.error = Some(error);
-            }
-        }
-    }
-    fn request_decode(&mut self, path: PathBuf, hash: String) -> Task<Message> {
-        if !self.warming.insert(path.clone()) {
-            return Task::none();
-        }
-        let cached = self.prepared.get(&path).cloned();
-        let ffmpeg = self.draft.ffmpeg.clone();
-        let message_path = path.clone();
-        Task::perform(
-            async move {
-                if let Some(audio) = cached {
-                    tokio::task::spawn_blocking(move || library::verify(&path, &hash))
-                        .await
-                        .map_err(|e| e.to_string())??;
-                    Ok(audio)
-                } else {
-                    playback::decode(path, hash, ffmpeg).await
-                }
-            },
-            move |result| Message::Prepared(message_path.clone(), result),
-        )
-    }
-    fn warm_selection(&mut self) -> Task<Message> {
-        let Some((track, _)) = self.selected else {
-            return Task::none();
-        };
-        let mut keys = vec![(track, None)];
-        keys.extend(
-            self.library
-                .jobs
-                .iter()
-                .rev()
-                .filter(|j| j.track_id == track && j.status == Status::Succeeded)
-                .take(7)
-                .map(|j| (track, Some(j.id))),
-        );
-        let mut tasks = Vec::new();
-        for key in keys {
-            if let Some((path, hash)) = self.audio(key)
-                && !self.prepared.contains_key(&path)
-            {
-                tasks.push(self.request_decode(path, hash));
-            }
-        }
-        Task::batch(tasks)
-    }
-    fn prepare(&mut self) -> Task<Message> {
-        self.loading = false;
-        let Some(key) = self.listening_key() else {
-            return Task::none();
-        };
-        let Some((path, hash)) = self.audio(key) else {
-            self.notice =
-                Some("Selected result is not ready. Current playback is unchanged.".into());
-            return Task::none();
-        };
-        self.loading = true;
-        if let Some(audio) = self.prepared.get(&path).cloned()
-            && audio.unchanged(&path)
-        {
-            self.prepared_order.retain(|p| p != &path);
-            self.prepared_order.push_back(path);
-            self.activate(audio);
-            return self.warm_selection();
-        }
-        let task = self.request_decode(path, hash);
-        let warm = self.warm_selection();
-        Task::batch([task, warm])
-    }
-
     fn import(&mut self, path: PathBuf) -> Task<Message> {
         self.hovering = false;
         let Some(root) = self.root.clone() else {
@@ -638,7 +521,7 @@ impl App {
             Message::UseSettings(id) => {
                 if let Some(job) = self.library.jobs.iter().find(|j| j.id == id) {
                     self.composer_track = Some(job.track_id);
-                    self.draft = settings_from_config(&job.config, &self.library.settings);
+                    self.draft = settings_from_config(&job.config);
                     self.show_settings = true;
                 }
             }
@@ -898,38 +781,7 @@ impl App {
                 }
             }
             Message::Prepared(path, result) => {
-                self.warming.remove(&path);
-                let wanted = self
-                    .listening_key()
-                    .and_then(|key| self.audio(key))
-                    .is_some_and(|(p, _)| p == path);
-                match result {
-                    Ok(audio) => {
-                        let registered = self.library.tracks.iter().any(|t| t.input == path)
-                            || self.library.jobs.iter().any(|j| j.output == path);
-                        if registered {
-                            self.prepared_order.retain(|p| p != &path);
-                            self.prepared_order.push_back(path.clone());
-                            self.prepared.insert(path, audio.clone());
-                            while self.prepared_order.len() > PCM_CACHE_ENTRIES {
-                                if let Some(old) = self.prepared_order.pop_front() {
-                                    self.prepared.remove(&old);
-                                }
-                            }
-                            if wanted {
-                                self.activate(audio);
-                            } else {
-                                self.player.warm(audio);
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        if wanted {
-                            self.loading = false;
-                            self.error = Some(error);
-                        }
-                    }
-                }
+                self.preparation_finished(path, result);
             }
             Message::Graph(kind) => self.graph = kind,
             Message::Details => self.show_details = !self.show_details,
@@ -1104,7 +956,7 @@ fn measure(a: Option<&analysis::Analysis>, key: &str, unit: &str) -> String {
     a.and_then(|a| a.number(key))
         .map_or_else(|| "—".into(), |v| format!("{v:.1}{unit}"))
 }
-fn settings_from_config(c: &model::Config, _base: &Settings) -> Settings {
+fn settings_from_config(c: &model::Config) -> Settings {
     Settings {
         backend: c.backend.display().to_string(),
         ffmpeg: c.ffmpeg.clone(),
@@ -1218,11 +1070,10 @@ mod tests {
         let path = app.library.tracks[0].input.clone();
         let audio = playback::test_audio(&[[0.2; 2]; 1000], Some(&path));
         app.prepared.insert(path.clone(), audio);
-        app.prepared_order.push_back(path.clone());
         let _ = app.prepare();
         assert!(app.loaded);
         assert!(!app.loading);
-        assert!(app.warming.is_empty());
+        assert!(app.prepared.is_idle());
         assert!(app.prepared.contains_key(&path));
     }
     #[test]

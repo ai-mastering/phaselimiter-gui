@@ -161,7 +161,7 @@ class CorrespondingSources(unittest.TestCase):
             gui = root / 'gui'
             for name in ('src', 'script', 'packaging', '.cargo', '.github'):
                 (gui / name).mkdir(parents=True)
-            for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'LICENSE', 'README.md'):
+            for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'build.rs', 'LICENSE', 'README.md'):
                 (gui / name).write_text('source snapshot')
             pins = {'backend': {'revision': 'a' * 40}, 'sources': {'library': {
                 'filename': source.name, 'url': source.as_uri(), 'sha256': digest(source)}}}
@@ -172,6 +172,26 @@ class CorrespondingSources(unittest.TestCase):
             with tarfile.open(output) as archive:
                 self.assertEqual(archive.extractfile('downloads/' + source.name).read(), source.read_bytes())
                 self.assertEqual(archive.extractfile('backend/SOURCE-REVISION').read(), b'a' * 40 + b'\n')
+                self.assertEqual(archive.extractfile('gui/build.rs').read(), b'source snapshot')
+
+
+class MacMetadata(unittest.TestCase):
+    def test_bundle_uses_cargo_version_and_macos_metadata(self):
+        import plistlib
+        import tomllib
+        import package_common
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / 'App.app'
+            (app / 'Contents').mkdir(parents=True)
+            package_common.write_macos_plist(app)
+            with (package_common.ROOT / 'Cargo.toml').open('rb') as source:
+                package = tomllib.load(source)['package']
+            with (app / 'Contents/Info.plist').open('rb') as source:
+                info = plistlib.load(source)
+            self.assertEqual(info['CFBundleExecutable'], package['name'])
+            self.assertEqual(info['CFBundleShortVersionString'], package['version'])
+            self.assertEqual(info['CFBundleVersion'], package['metadata']['macos']['bundle-version'])
+            self.assertEqual(info['LSMinimumSystemVersion'], package['metadata']['macos']['minimum-system-version'])
 
 
 if __name__ == '__main__':

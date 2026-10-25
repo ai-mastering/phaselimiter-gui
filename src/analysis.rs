@@ -71,15 +71,6 @@ impl Analysis {
         Ok(result)
     }
 
-    pub fn persist(&mut self, root: &Path) -> Result<(), String> {
-        if self.artifact.is_none() {
-            *self = Self::store(
-                root,
-                &serde_json::to_vec(&*self.raw).map_err(|e| e.to_string())?,
-            )?;
-        }
-        Ok(())
-    }
     pub fn available(&self) -> bool {
         self.raw.is_object()
     }
@@ -166,31 +157,29 @@ pub fn executable(backend: &Path) -> PathBuf {
 
 impl Serialize for Analysis {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if let Some(path) = &self.artifact {
-            #[derive(Serialize)]
-            struct Reference<'a> {
-                analysis_file: &'a Path,
-            }
-            Reference {
-                analysis_file: path,
-            }
-            .serialize(serializer)
-        } else {
-            self.raw.serialize(serializer)
+        #[derive(Serialize)]
+        struct Reference<'a> {
+            analysis_file: &'a Path,
         }
+        let path = self.artifact.as_deref().ok_or_else(|| {
+            serde::ser::Error::custom("Analysis must be stored before saving the library")
+        })?;
+        Reference {
+            analysis_file: path,
+        }
+        .serialize(serializer)
     }
 }
 impl<'de> Deserialize<'de> for Analysis {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = Value::deserialize(deserializer)?;
-        if let Some(path) = value.get("analysis_file").and_then(Value::as_str) {
-            let path = PathBuf::from(path);
-            let mut result = Self::new(Value::Null);
-            result.artifact = Some(path);
-            Ok(result)
-        } else {
-            Ok(Self::new(value))
+        #[derive(Deserialize)]
+        struct Reference {
+            analysis_file: PathBuf,
         }
+        let reference = Reference::deserialize(deserializer)?;
+        let mut result = Self::new(Value::Null);
+        result.artifact = Some(reference.analysis_file);
+        Ok(result)
     }
 }
 
@@ -284,19 +273,32 @@ pub async fn run(
 mod tests {
     use super::*;
     #[test]
-    fn clones_share_plot_data_and_saved_json_remains_compatible() {
+    fn clones_share_plot_data_and_saved_references_restore_reports() {
         let raw = serde_json::json!({"waveform":[0.1,0.2],"spectrum":[{"hz":100,"db":-10}]});
-        let analysis = Analysis::new(raw.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let analysis = Analysis::store(dir.path(), &serde_json::to_vec(&raw).unwrap()).unwrap();
         let other = analysis.clone();
         assert!(Arc::ptr_eq(&analysis.waveform(), &other.waveform()));
         assert!(Arc::ptr_eq(
             &analysis.series("spectrum", "hz", "db"),
             &other.series("spectrum", "hz", "db")
         ));
-        assert_eq!(serde_json::to_value(&analysis).unwrap(), raw);
-        let restored: Analysis = serde_json::from_value(raw).unwrap();
+        let saved = serde_json::to_value(&analysis).unwrap();
+        assert_eq!(
+            saved,
+            serde_json::json!({"analysis_file": analysis.path().unwrap()})
+        );
+        let mut restored: Analysis = serde_json::from_value(saved).unwrap();
+        restored.load_report().unwrap();
         assert_eq!(restored.waveform().len(), 2);
     }
+    #[test]
+    fn inline_reports_are_not_a_saved_library_format() {
+        let raw = serde_json::json!({"loudness": -10});
+        assert!(serde_json::from_value::<Analysis>(raw.clone()).is_err());
+        assert!(serde_json::to_value(Analysis::new(raw)).is_err());
+    }
+
     #[test]
     fn regeneration_repairs_only_the_exact_content_addressed_report() {
         let dir = tempfile::tempdir().unwrap();

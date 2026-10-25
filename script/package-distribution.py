@@ -5,7 +5,6 @@ import io
 import json
 import os
 from pathlib import Path
-import plistlib
 import shutil
 import subprocess
 import sys
@@ -14,6 +13,7 @@ import zipfile
 
 from audio_common import Build, PINS, ROOT, digest, download, run
 from bundle_runtime import TOOLS, audit, collect
+from package_common import write_macos_plist
 
 
 def notices(build, stage):
@@ -120,11 +120,7 @@ def package(build, target, sources=False):
     run([sys.executable, ROOT / "script/third-party-licenses.py", target,
          resource / "THIRD_PARTY_LICENSES.txt"], cwd=ROOT)
     if build.is_mac:
-        with (payload / "Contents/Info.plist").open("wb") as output:
-            plistlib.dump({"CFBundleExecutable": "phaselimiter-gui", "CFBundleIdentifier": "com.aimastering.phaselimiter-gui",
-                          "CFBundleName": "Phaselimiter", "CFBundlePackageType": "APPL",
-                          "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "6",
-                          "LSMinimumSystemVersion": "14.0", "NSHighResolutionCapable": True}, output)
+        write_macos_plist(payload)
         run(["codesign", "--force", "--sign", "-", payload])
         run(["codesign", "--verify", "--deep", "--strict", payload])
     elif not build.is_windows:

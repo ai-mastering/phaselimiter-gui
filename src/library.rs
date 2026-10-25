@@ -143,59 +143,6 @@ pub fn import(root: &Path, source: PathBuf, id: usize) -> Result<Track, String> 
 }
 
 impl Library {
-    fn persist_analyses(&mut self, root: &Path) -> Result<(), String> {
-        let mut paths = std::collections::HashMap::new();
-        for (audio, analysis) in self
-            .tracks
-            .iter_mut()
-            .map(|t| (&t.input, &mut t.analysis))
-            .chain(self.jobs.iter_mut().map(|j| (&j.output, &mut j.analysis)))
-        {
-            if let Some(analysis) = analysis {
-                let old = audio.with_extension("analysis.json");
-                if analysis.path().is_none() && old.is_file() {
-                    *analysis = Analysis::store(root, &fs::read(&old).map_err(|e| e.to_string())?)?;
-                }
-                analysis.persist(root)?;
-                paths.insert(
-                    old,
-                    analysis
-                        .path()
-                        .ok_or("Analysis was not persisted")?
-                        .to_path_buf(),
-                );
-            }
-        }
-        for job in &mut self.jobs {
-            if let Some(old) = &job.config.reference {
-                let path = if let Some(path) = paths.get(old) {
-                    path.clone()
-                } else if old.parent() == Some(root.join("analyses").as_path()) {
-                    old.clone()
-                } else {
-                    if let Some(hash) = &job.reference_hash {
-                        verify(old, hash)?;
-                    }
-                    Analysis::store(root, &fs::read(old).map_err(|e| e.to_string())?)?
-                        .path()
-                        .ok_or("Reference was not persisted")?
-                        .to_path_buf()
-                };
-                paths.insert(old.clone(), path.clone());
-                if &path != old || job.reference_hash.is_none() {
-                    job.reference_hash = Some(hash(&path)?);
-                }
-                job.config.reference = Some(path);
-            }
-        }
-        for settings in std::iter::once(&mut self.settings).chain(self.draft.iter_mut()) {
-            if let Some(path) = paths.get(Path::new(&settings.reference)) {
-                settings.reference = path.display().to_string();
-            }
-        }
-        Ok(())
-    }
-
     pub fn load(root: &Path) -> Result<Self, String> {
         let path = root.join("library.json");
         if !path.exists() {
@@ -230,39 +177,6 @@ impl Library {
                 job.status = Status::Interrupted;
             }
         }
-        let legacy: Vec<PathBuf> = library
-            .tracks
-            .iter()
-            .map(|t| t.input.with_extension("analysis.json"))
-            .chain(
-                library
-                    .jobs
-                    .iter()
-                    .map(|j| j.output.with_extension("analysis.json")),
-            )
-            .chain(
-                library
-                    .jobs
-                    .iter()
-                    .filter_map(|j| j.config.reference.clone()),
-            )
-            .filter(|p| p.starts_with(root.join("audio")) || p.starts_with(root.join("jobs")))
-            .collect();
-        let migration = library
-            .tracks
-            .iter()
-            .filter_map(|t| t.analysis.as_ref())
-            .chain(library.jobs.iter().filter_map(|j| j.analysis.as_ref()))
-            .any(|a| a.path().is_none())
-            || legacy.iter().any(|p| p.is_file());
-        if migration {
-            library.persist_analyses(root)?;
-            library.save(root)?;
-            // Only obsolete report copies, after the new manifest is durable.
-            for path in legacy {
-                let _ = fs::remove_file(path);
-            }
-        }
         // Reserve above every persisted ID, including libraries saved during an import.
         library.next_id = library.next_id.max(
             library
@@ -278,14 +192,12 @@ impl Library {
 
     pub fn save(&self, root: &Path) -> Result<(), String> {
         fs::create_dir_all(root).map_err(|e| e.to_string())?;
-        let mut snapshot = self.clone();
-        snapshot.persist_analyses(root)?;
         let mut temporary = tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
         {
             // A JSON serializer writes many small tokens. Buffer them before
             // reaching the filesystem (especially shared/remote home folders).
             let mut buffered = std::io::BufWriter::with_capacity(65536, &mut temporary);
-            serde_json::to_writer(&mut buffered, &snapshot).map_err(|e| e.to_string())?;
+            serde_json::to_writer(&mut buffered, self).map_err(|e| e.to_string())?;
             buffered.flush().map_err(|e| e.to_string())?;
         }
         temporary.as_file().sync_all().map_err(|e| e.to_string())?;
@@ -404,23 +316,16 @@ mod tests {
         assert_eq!(loaded.tracks.len(), 1);
     }
     #[test]
-    fn migrates_inline_analysis_and_preserves_artifact_across_saves() {
+    fn preserves_analysis_artifact_across_saves() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("mix.wav");
         fs::write(&source, b"audio").unwrap();
         let mut track = import(dir.path(), source, 0).unwrap();
         let bytes = br#"{"loudness":-9.200000000000003,"bands":[]}"#;
-        let old = track.input.with_extension("analysis.json");
-        fs::write(&old, bytes).unwrap();
-        track.analysis = Some(Analysis::new(serde_json::from_slice(bytes).unwrap()));
-        let mut legacy = Library::default();
-        legacy.settings.reference = old.display().to_string();
-        legacy.tracks.push(track);
-        fs::write(
-            dir.path().join("library.json"),
-            serde_json::to_vec(&legacy).unwrap(),
-        )
-        .unwrap();
+        track.analysis = Some(Analysis::store(dir.path(), bytes).unwrap());
+        let mut state = Library::default();
+        state.tracks.push(track);
+        state.save(dir.path()).unwrap();
         let mut loaded = Library::load(dir.path()).unwrap();
         let artifact = loaded.tracks[0]
             .analysis
@@ -430,8 +335,6 @@ mod tests {
             .unwrap()
             .to_path_buf();
         assert_eq!(fs::read(&artifact).unwrap(), bytes);
-        assert!(!old.exists());
-        assert_eq!(loaded.settings.reference, artifact.display().to_string());
         loaded.selected = Some((0, None));
         loaded.save(dir.path()).unwrap();
         let manifest: serde_json::Value =

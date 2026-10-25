@@ -6,6 +6,10 @@ rust-version = "1.88"
 license = "MIT"
 description = "Portable desktop frontend for the phaselimiter mastering engine"
 
+[package.metadata.macos]
+bundle-version = "6"
+minimum-system-version = "14.0"
+
 [dependencies]
 iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "x11", "wayland", "tokio", "canvas", "image-without-codecs"] }
 tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros"] }
