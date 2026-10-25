@@ -11,6 +11,7 @@ mod model;
 mod playback;
 mod plots;
 mod preparation;
+mod theme;
 mod ui;
 
 use comparison::{ComparisonChoice, settings_differences};
@@ -18,7 +19,9 @@ use iced::widget::{
     button, canvas, checkbox, column, container, pick_list, progress_bar, row, rule, scrollable,
     slider, text, text_input,
 };
-use iced::{Element, Fill, Subscription, Task, Theme};
+use iced::{Fill, Subscription, Task};
+use theme::Theme;
+type Element<'a, Message> = iced::Element<'a, Message, Theme>;
 use library::{Library, Track};
 use model::{CeilingMode, Format, Job, NoiseMode, ReferenceMode, Settings, Solver, Status};
 use std::{
@@ -40,7 +43,7 @@ fn main() -> iced::Result {
     iced::application(App::load, App::update, App::view)
         .title("Phaselimiter")
         .subscription(App::subscription)
-        .theme(Theme::Light)
+        .theme(|_: &App| Theme)
         .window_size((1280.0, 800.0))
         .exit_on_close_request(false)
         .run()

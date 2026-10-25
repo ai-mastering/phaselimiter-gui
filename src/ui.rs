@@ -23,7 +23,7 @@ impl App {
                 "History"
             })
             .on_press(Message::ToggleHistory(!history_visible))
-            .style(button::secondary)
+            .style(theme::normal)
             .padding(5),
         );
         header = header
@@ -36,13 +36,13 @@ impl App {
             .push(
                 button("Add audio")
                     .on_press(Message::AddInput)
-                    .style(button::secondary)
+                    .style(theme::normal)
                     .padding(6),
             )
             .push(
                 button("App settings")
                     .on_press(Message::ToggleAppSettings)
-                    .style(button::secondary)
+                    .style(theme::normal)
                     .padding(6),
             );
         let mut body = column![header].spacing(8);
@@ -76,7 +76,7 @@ impl App {
                 title = title.push(
                     button("Export a copy")
                         .on_press(Message::ToggleExport)
-                        .style(button::secondary)
+                        .style(theme::normal)
                         .padding(4),
                 );
             }
@@ -99,17 +99,17 @@ impl App {
                 row![
                     button("Analysis").on_press(Message::ShowAnalysis).style(
                         if !self.show_settings && !self.show_app_settings {
-                            button::primary
+                            theme::selected
                         } else {
-                            button::secondary
+                            theme::normal
                         }
                     ),
                     button("Mastering settings")
                         .on_press(Message::ShowMastering)
                         .style(if self.show_settings && !self.show_app_settings {
-                            button::primary
+                            theme::selected
                         } else {
-                            button::secondary
+                            theme::normal
                         }),
                 ]
                 .spacing(6),
@@ -159,9 +159,9 @@ impl App {
                     .width(Fill)
                     .padding(5)
                     .style(if self.selected == Some(key) {
-                        button::primary
+                        theme::selected
                     } else {
-                        button::secondary
+                        theme::normal
                     }),
             ]
             .spacing(4);
@@ -205,9 +205,9 @@ impl App {
                     .width(Fill)
                     .padding(5)
                     .style(if self.selected == Some(key) {
-                        button::primary
+                        theme::selected
                     } else {
-                        button::secondary
+                        theme::normal
                     })
                     .on_press(Message::Select(key)),
                 );
@@ -235,7 +235,7 @@ impl App {
                 .push(
                     button("Remove selected")
                         .on_press(Message::Remove(key))
-                        .style(button::text),
+                        .style(theme::normal),
                 );
         }
         pane.width(HISTORY_WIDTH).height(Fill).into()
@@ -257,18 +257,18 @@ impl App {
                 .push(
                     button(text(format!("A: {}", self.comparison_label())).size(13))
                         .style(if self.output_side {
-                            button::secondary
+                            theme::normal
                         } else {
-                            button::primary
+                            theme::selected
                         })
                         .on_press(Message::Side(false)),
                 )
                 .push(
                     button(text(format!("B: Master #{}", job.id)).size(13))
                         .style(if self.output_side {
-                            button::primary
+                            theme::selected
                         } else {
-                            button::secondary
+                            theme::normal
                         })
                         .on_press_maybe(
                             (job.status == Status::Succeeded).then_some(Message::Side(true)),
@@ -326,7 +326,7 @@ impl App {
                     button("Clear loop")
                         .on_press(Message::ClearRegion)
                         .padding(2)
-                        .style(button::text),
+                        .style(theme::normal),
                 );
         }
         transport = transport.push(loop_row);
@@ -371,7 +371,7 @@ impl App {
                     button(text(format!("Load settings from Master #{}", job.id)).size(12))
                         .on_press(Message::UseSettings(job.id))
                         .padding(3)
-                        .style(button::text),
+                        .style(theme::normal),
                 ]
                 .spacing(8)
                 .align_y(iced::Center),
@@ -504,9 +504,9 @@ impl App {
                 button(text(kind.to_string()).size(12))
                     .padding(5)
                     .style(if self.graph == kind {
-                        button::primary
+                        theme::selected
                     } else {
-                        button::secondary
+                        theme::normal
                     })
                     .on_press(Message::Graph(kind)),
             );
@@ -579,7 +579,7 @@ impl App {
         detail = detail.push(
             button("Reanalyze")
                 .on_press(Message::Analyze)
-                .style(button::text),
+                .style(theme::normal),
         );
         if let Some(job) = job {
             detail = detail.push(
@@ -589,7 +589,7 @@ impl App {
                     "Processing details"
                 })
                 .on_press(Message::Details)
-                .style(button::text),
+                .style(theme::normal),
             );
             if self.show_details {
                 detail = detail.push(self.processing_details(job));
@@ -736,7 +736,7 @@ impl App {
             button(text(format!("Load settings from Master #{}", job.id)).size(12))
                 .on_press(Message::UseSettings(job.id))
                 .padding(4)
-                .style(button::secondary),
+                .style(theme::normal),
         ]
         .spacing(4)
         .into()
@@ -920,7 +920,7 @@ impl App {
         column![
             text("Engine & resources").size(14),
             text("Blank: bundled with this app. Non-empty: use the specified path.").size(12),
-            button("Clear paths / use bundled tools").on_press(Message::UseBundledTools).style(button::secondary),
+            button("Clear paths / use bundled tools").on_press(Message::UseBundledTools).style(theme::normal),
             field(
                 "phase_limiter executable",
                 &self.library.app_settings.backend,
@@ -979,7 +979,7 @@ impl App {
                 button("Cancel current & pause")
                     .on_press(Message::Cancel)
                     .padding(4)
-                    .style(button::secondary),
+                    .style(theme::normal),
             );
         }
         footer.into()

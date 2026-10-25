@@ -1,10 +1,11 @@
 use crate::Message;
 use crate::analysis::Series;
+use crate::theme::Theme;
 use iced::widget::{
     Action,
     canvas::{self, Frame, Geometry, Path, Stroke},
 };
-use iced::{Color, Point, Rectangle, Renderer, Theme, mouse};
+use iced::{Color, Point, Rectangle, Renderer, mouse};
 use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 const CACHE_ENTRIES: usize = 100;
@@ -67,7 +68,7 @@ impl CachedPlot {
             && self.logarithmic == plot.logarithmic
     }
 }
-impl canvas::Program<Message> for Plot {
+impl canvas::Program<Message, Theme> for Plot {
     type State = State;
     fn update(
         &self,
@@ -273,11 +274,11 @@ mod tests {
         let mut a = plot(Arc::from([(0., 0.1), (0.5, -0.2), (1., 0.3)]));
         let b = plot(Arc::from([(0., 0.4), (0.5, -0.1), (1., 0.2)]));
         let draw = |plot: &Plot, bounds| {
-            <Plot as canvas::Program<Message>>::draw(
+            <Plot as canvas::Program<Message, Theme>>::draw(
                 plot,
                 &state,
                 &renderer,
-                &Theme::Light,
+                &Theme,
                 bounds,
                 mouse::Cursor::Unavailable,
             )

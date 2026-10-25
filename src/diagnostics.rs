@@ -59,17 +59,13 @@ impl App {
                     .height(iced::Shrink)
                     .max_height(140)
                     .on_action(move |action| Message::SelectDiagnostic(key.clone(), action))
-                    .style(|theme, status| {
-                        let mut style = text_editor::default(theme, status);
-                        style.value = iced::Color::from_rgb8(165, 45, 40);
-                        style
-                    })
+                    .style(crate::theme::diagnostic)
                     .into()
             } else {
                 // New errors remain copyable even before the next state refresh.
                 text(error.clone())
                     .size(12)
-                    .color(iced::Color::from_rgb8(165, 45, 40))
+                    .color(crate::theme::ERROR)
                     .width(iced::Fill)
                     .into()
             };
@@ -78,7 +74,7 @@ impl App {
             button("Copy error")
                 .on_press(Message::CopyText(error))
                 .padding(4)
-                .style(button::secondary)
+                .style(crate::theme::normal)
         ]
         .spacing(6)
         .into()
