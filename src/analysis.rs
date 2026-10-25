@@ -237,6 +237,8 @@ pub async fn run(
         .arg(cache)
         .arg("--tmp")
         .arg(scratch.path())
+        .arg("--spectrum_distribution_output")
+        .arg(scratch.path().join("frequency.png"))
         .arg("--drr=true")
         .stdin(Stdio::null())
         .kill_on_drop(true);
@@ -265,6 +267,13 @@ pub async fn run(
         return Err("Analyzer did not return an object.".into());
     }
     let analysis = Analysis::store(&root, &output.stdout)?;
+    if let Some(report) = analysis.path() {
+        let source = scratch.path().join("frequency.png");
+        if source.is_file() {
+            std::fs::copy(&source, report.with_extension("frequency.png"))
+                .map_err(|e| format!("Saving analysis image: {e}"))?;
+        }
+    }
     analysis.plot_data();
     Ok(analysis)
 }
@@ -340,6 +349,9 @@ mod tests {
         std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o755)).unwrap();
         let analyzer = dir.path().join("audio_analyzer");
         std::fs::write(&analyzer,"#!/bin/sh\n[ \"$1\" = '--input' ] || exit 4\n[ \"$(cat \"$2\")\" = normalized ] || exit 5\nprintf '{\"loudness\":-10,\"bands\":[],\"covariance\":[]}'\n").unwrap();
+        let script = std::fs::read_to_string(&analyzer).unwrap();
+        let script = script.replace("printf '{", "while [ \"$#\" -gt 0 ]; do\n case \"$1\" in --spectrum_distribution_output) printf image > \"$2\";; esac\n shift\ndone\nprintf '{");
+        std::fs::write(&analyzer, script).unwrap();
         std::fs::set_permissions(&analyzer, std::fs::Permissions::from_mode(0o755)).unwrap();
         let result = run(
             dir.path().to_path_buf(),
@@ -353,5 +365,9 @@ mod tests {
         .unwrap();
         assert_eq!(result.number("loudness"), Some(-10.));
         assert!(result.path().unwrap().is_file());
+        assert_eq!(
+            std::fs::read(result.path().unwrap().with_extension("frequency.png")).unwrap(),
+            b"image"
+        );
     }
 }

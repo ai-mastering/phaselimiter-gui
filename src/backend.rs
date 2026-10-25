@@ -10,6 +10,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Debug, Clone)]
 pub enum Update {
+    Command(String),
     Line(String),
     Progress(f32),
     LimitingError(f64),
@@ -41,16 +42,25 @@ pub fn arguments(job: &Job) -> Vec<OsString> {
             .into_os_string(),
     );
     for (name, value) in [
-        ("mastering", "true".into()),
+        ("mastering", c.mastering.to_string()),
+        ("low_cut_freq", c.low_cut.to_string()),
+        ("high_cut_freq", c.high_cut.to_string()),
+        ("lowpass_true_peak_cut_freq", c.lowpass_cut.to_string()),
+        ("limiter_external_oversample", c.oversample.to_string()),
+        ("limiter_internal_oversample", "1".into()),
+        ("max_iter1", c.max_iter1.to_string()),
+        ("max_iter2", c.max_iter2.to_string()),
+        ("noise_update_mode", c.noise_mode.argument().into()),
         ("mastering_mode", "mastering5".into()),
+        ("limiting_mode", "phase".into()),
         ("reference", c.loudness.to_string()),
-        ("reference_mode", "loudness".into()),
+        ("reference_mode", c.reference_mode.argument().into()),
         ("mastering_matching_level", c.intensity.to_string()),
-        ("mastering_ms_matching_level", c.stereo.to_string()),
+        ("mastering_ms_matching_level", c.intensity.to_string()),
         ("mastering5_mastering_level", c.intensity.to_string()),
         ("erb_eval_func_weighting", c.preserve_bass.to_string()),
         ("pre_compression", c.pre_compression.to_string()),
-        ("ceiling_mode", "true_peak".into()),
+        ("ceiling_mode", c.ceiling_mode.argument().into()),
         ("ceiling", c.ceiling.to_string()),
         ("output_format", c.format.extension().into()),
         ("sample_rate", c.sample_rate.to_string()),
@@ -69,6 +79,27 @@ pub fn arguments(job: &Job) -> Vec<OsString> {
         flag(name, value.into());
     }
     args
+}
+
+// Display the actual argv in shell syntax; execution still bypasses the shell.
+fn command_text(command: &std::process::Command) -> String {
+    fn quote(value: &std::ffi::OsStr) -> String {
+        let value = value.to_string_lossy();
+        if cfg!(windows) {
+            format!("'{}'", value.replace("'", "''"))
+        } else {
+            format!("'{}'", value.replace("'", "'\"'\"'"))
+        }
+    }
+    let prefix = if cfg!(windows) { "& " } else { "" };
+    format!(
+        "{prefix}{}",
+        std::iter::once(command.get_program())
+            .chain(command.get_args())
+            .map(quote)
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
 }
 
 pub fn progress(line: &str) -> Option<f32> {
@@ -136,6 +167,13 @@ async fn execute(
     command.process_group(0);
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    if sender
+        .send(Update::Command(command_text(command.as_std())))
+        .await
+        .is_err()
+    {
+        return Update::Cancelled;
+    }
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -222,6 +260,45 @@ async fn execute(
 mod tests {
     use super::*;
     #[test]
+    fn passes_processing_choices_and_one_shared_mastering_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = crate::model::Settings {
+            output_dir: dir.path().display().to_string(),
+            mastering: false,
+            intensity: "0.3".into(),
+            noise_mode: crate::model::NoiseMode::Adaptive,
+            reference_mode: crate::model::ReferenceMode::Rms,
+            ceiling_mode: crate::model::CeilingMode::Peak,
+            oversample: "4".into(),
+            ..crate::model::Settings::default()
+        };
+        let job = crate::model::test_job(
+            dir.path().join("input.wav"),
+            dir.path().join("output.wav"),
+            settings.parse().unwrap(),
+            0,
+        );
+        let args = arguments(&job);
+        for (flag, expected) in [
+            ("mastering", "false"),
+            ("mastering_matching_level", "0.3"),
+            ("mastering_ms_matching_level", "0.3"),
+            ("mastering5_mastering_level", "0.3"),
+            ("reference_mode", "rms"),
+            ("ceiling_mode", "peak"),
+            ("noise_update_mode", "adaptive"),
+            ("limiter_external_oversample", "4"),
+            ("limiter_internal_oversample", "1"),
+            ("max_iter1", "100"),
+            ("max_iter2", "400"),
+        ] {
+            let name = OsString::from(format!("--{flag}"));
+            let pair = args.windows(2).find(|pair| pair[0] == name).unwrap();
+            assert_eq!(pair[1], OsString::from(expected));
+        }
+    }
+
+    #[test]
     fn accepts_backend_progress_and_rejects_non_finite_values() {
         assert_eq!(progress("stage: progression: 5e-1"), Some(0.5));
         assert_eq!(progress("progression: 2"), Some(1.0));
@@ -268,6 +345,16 @@ mod tests {
         );
         assert!(matches!(updates.last(), Some(Update::Finished(Ok(())))));
         assert_eq!(std::fs::read(output).unwrap(), b"result");
+        let captured = updates
+            .iter()
+            .find_map(|update| match update {
+                Update::Command(command) => Some(command),
+                _ => None,
+            })
+            .unwrap();
+        assert!(captured.contains("日本語 input.wav"));
+        assert!(captured.contains("'--tmp'"));
+        assert!(captured.contains("phaselimiter-"));
     }
 
     #[cfg(unix)]

@@ -51,9 +51,13 @@ impl App {
             {
                 let key = (track.id, Some(job.id));
                 let label = format!(
-                    "Master {} · {} LUFS · {}",
+                    "Master {} · {} {} · {}",
                     index + 1,
                     job.config.loudness,
+                    match job.config.reference_mode {
+                        ReferenceMode::Loudness | ReferenceMode::YoutubeLoudness => "LUFS",
+                        _ => "dB",
+                    },
                     job.status
                 );
                 entries = entries.push(
@@ -292,6 +296,16 @@ impl App {
                 })
                 .size(12),
             );
+            if let Some(report) = output.or(input)
+                && let Some(path) = report.path()
+            {
+                let image = path.with_extension("frequency.png");
+                if image.is_file() {
+                    detail = detail
+                        .push(text("Frequency distribution").size(14))
+                        .push(iced::widget::image(image).width(Fill));
+                }
+            }
             if let Some(job) = job {
                 detail = detail.push(
                     button(if self.show_details {
@@ -303,7 +317,8 @@ impl App {
                     .style(button::text),
                 );
                 if self.show_details {
-                    detail=detail.push(text(format!("Status: {}\nTarget: {} LUFS · Ceiling: {} dBTP\nIntensity: {} · Stereo: {}\n{} · Seed {} · {} evaluations · {} workers\nBass preservation: {} · Pre-compression: {}\nOutput: {} Hz / {} / {} bits\nReference: {}",job.status,job.config.loudness,job.config.ceiling,job.config.intensity,job.config.stereo,job.config.solver,job.config.seed,job.config.evaluations,job.config.workers,job.config.preserve_bass,job.config.pre_compression,job.config.sample_rate,job.config.format,job.config.bit_depth,if job.config.reference.is_some(){"Custom audio"}else{"Default"})).size(13));
+                    detail=detail.push(text(format!("Status: {}\nTarget level: {} · Ceiling: {} dB\nIntensity: {} · Mastering: {}\n{} · Seed {} · {} evaluations · {} workers\nBass preservation: {} · Pre-compression: {}\nOutput: {} Hz / {} / {} bits\nReference: {}",job.status,job.config.loudness,job.config.ceiling,job.config.intensity,job.config.mastering,job.config.solver,job.config.seed,job.config.evaluations,job.config.workers,job.config.preserve_bass,job.config.pre_compression,job.config.sample_rate,job.config.format,job.config.bit_depth,if job.config.reference.is_some(){"Custom audio"}else{"Default"})).size(13));
+                    detail = detail.push(text(format!("Reference mode: {} · Peak control: {} · Lowpass peak: {} Hz\nCuts: {}–{} Hz · Oversampling: {}\nLimiter iterations: {} / {} · Noise update: {}", job.config.reference_mode, job.config.ceiling_mode, job.config.lowpass_cut, job.config.low_cut, job.config.high_cut, job.config.oversample, job.config.max_iter1, job.config.max_iter2, job.config.noise_mode)).size(13));
                     if let Some(error) = job.limiting_error {
                         detail =
                             detail.push(text(format!("Limiting error: {error:.3} dB")).size(13));
@@ -315,6 +330,19 @@ impl App {
                         detail = detail
                             .push(text("Limiting error spectrogram").size(14))
                             .push(iced::widget::image(image_path).width(Fill));
+                    }
+                    if let Some(command) = &job.command {
+                        detail = detail
+                            .push(
+                                row![
+                                    text("Executed command").size(14),
+                                    button("Copy command").on_press(Message::CopyCommand(job.id))
+                                ]
+                                .spacing(12),
+                            )
+                            .push(scrollable(text(command).size(12)).height(120));
+                    } else {
+                        detail = detail.push(text("Executed command: not recorded").size(12));
                     }
                     detail = detail
                         .push(text("Backend log").size(14))
@@ -438,30 +466,26 @@ impl App {
             ),
             row![
                 field(
-                    "Target loudness (LUFS)",
+                    "Target level (LUFS / dB by reference)",
                     &self.draft.loudness,
                     Field::Loudness
                 ),
                 field(
-                    "True-peak ceiling (dBTP)",
+                    "Peak ceiling (dB)",
                     &self.draft.ceiling,
                     Field::Ceiling
                 )
             ]
             .spacing(12),
-            row![
-                field(
-                    "Mastering intensity (0–1)",
-                    &self.draft.intensity,
-                    Field::Intensity
-                ),
-                field(
-                    "Stereo matching (0–1)",
-                    &self.draft.stereo,
-                    Field::Stereo
-                )
-            ]
-            .spacing(12),
+            checkbox(self.draft.mastering).label("Automatic mastering").on_toggle(Message::Mastering),
+            field("Mastering intensity (0–1)", &self.draft.intensity, Field::Intensity),
+            text("Volume reference").size(12),
+            pick_list(ReferenceMode::ALL, Some(self.draft.reference_mode), Message::ReferenceMode),
+            text("Peak control").size(12),
+            pick_list(CeilingMode::ALL, Some(self.draft.ceiling_mode), Message::CeilingMode),
+            field("Lowpass true-peak frequency (Hz)", &self.draft.lowpass_cut, Field::LowpassCut),
+            row![field("Low cut (Hz)", &self.draft.low_cut, Field::LowCut), field("High cut (Hz)", &self.draft.high_cut, Field::HighCut)].spacing(12),
+            text("Set both cuts to 0 to disable filtering. Otherwise use low < high < 22050 Hz.").size(12),
             checkbox(self.draft.preserve_bass)
                 .label("Preserve bass")
                 .on_toggle(Message::PreserveBass),
@@ -489,7 +513,13 @@ impl App {
             ]
             .spacing(12),
             rule::horizontal(1),
-            text("Optimization").size(18),
+            text("Limiter core").size(18),
+            field("Oversampling (1, 2, 4, 8, …)", &self.draft.oversample, Field::Oversample),
+            row![field("Outer iteration limit", &self.draft.max_iter1, Field::MaxIter1), field("Inner iteration limit", &self.draft.max_iter2, Field::MaxIter2)].spacing(12),
+            text("Noise update mode").size(12),
+            pick_list(NoiseMode::ALL, Some(self.draft.noise_mode), Message::NoiseMode),
+            rule::horizontal(1),
+            text("Mastering optimization").size(18),
             pick_list(Solver::ALL, Some(self.draft.solver), Message::Solver).width(Fill),
             row![
                 field(

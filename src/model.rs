@@ -46,9 +46,93 @@ impl std::fmt::Display for Solver {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ReferenceMode {
+    #[default]
+    Loudness,
+    YoutubeLoudness,
+    Rms,
+    Peak,
+    Zero,
+}
+impl ReferenceMode {
+    pub const ALL: [Self; 5] = [
+        Self::Loudness,
+        Self::YoutubeLoudness,
+        Self::Rms,
+        Self::Peak,
+        Self::Zero,
+    ];
+    pub fn argument(self) -> &'static str {
+        match self {
+            Self::Loudness => "loudness",
+            Self::YoutubeLoudness => "youtube_loudness",
+            Self::Rms => "rms",
+            Self::Peak => "peak",
+            Self::Zero => "zero",
+        }
+    }
+}
+impl std::fmt::Display for ReferenceMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.argument())
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CeilingMode {
+    Peak,
+    #[default]
+    TruePeak,
+    LowpassTruePeak,
+}
+impl CeilingMode {
+    pub const ALL: [Self; 3] = [Self::Peak, Self::TruePeak, Self::LowpassTruePeak];
+    pub fn argument(self) -> &'static str {
+        match self {
+            Self::Peak => "peak",
+            Self::TruePeak => "true_peak",
+            Self::LowpassTruePeak => "lowpass_true_peak",
+        }
+    }
+}
+impl std::fmt::Display for CeilingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.argument())
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum NoiseMode {
+    #[default]
+    Linear,
+    Adaptive,
+}
+impl NoiseMode {
+    pub const ALL: [Self; 2] = [Self::Linear, Self::Adaptive];
+    pub fn argument(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Adaptive => "adaptive",
+        }
+    }
+}
+impl std::fmt::Display for NoiseMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.argument())
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub noise_mode: NoiseMode,
+    pub max_iter2: String,
+    pub max_iter1: String,
+    pub oversample: String,
+    pub lowpass_cut: String,
+    pub ceiling_mode: CeilingMode,
+    pub reference_mode: ReferenceMode,
+    pub high_cut: String,
+    pub low_cut: String,
+    pub mastering: bool,
     pub reference: String,
     pub backend: String,
     pub ffmpeg: String,
@@ -56,7 +140,6 @@ pub struct Settings {
     pub output_dir: String,
     pub loudness: String,
     pub intensity: String,
-    pub stereo: String,
     pub ceiling: String,
     pub sample_rate: String,
     pub bit_depth: String,
@@ -99,6 +182,16 @@ impl Default for Settings {
         };
         let bundled_ffmpeg = root.join(ffmpeg);
         Self {
+            mastering: true,
+            low_cut: "20".into(),
+            high_cut: "20000".into(),
+            reference_mode: ReferenceMode::Loudness,
+            ceiling_mode: CeilingMode::TruePeak,
+            lowpass_cut: "15000".into(),
+            oversample: "1".into(),
+            max_iter1: "100".into(),
+            max_iter2: "400".into(),
+            noise_mode: NoiseMode::Linear,
             reference: String::new(),
             backend: root
                 .join("phaselimiter/bin")
@@ -117,14 +210,13 @@ impl Default for Settings {
             output_dir: output.to_string_lossy().into_owned(),
             loudness: "-9".into(),
             intensity: "1".into(),
-            stereo: "1".into(),
             ceiling: "0".into(),
             sample_rate: "44100".into(),
             bit_depth: "16".into(),
             workers: "0".into(),
             evaluations: "40000".into(),
             seed: "1".into(),
-            preserve_bass: false,
+            preserve_bass: true,
             pre_compression: true,
             format: Format::Wav,
             solver: Solver::DePrmm,
@@ -134,6 +226,26 @@ impl Default for Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default = "default_noise_mode")]
+    pub noise_mode: NoiseMode,
+    #[serde(default = "default_max_iter2")]
+    pub max_iter2: u32,
+    #[serde(default = "default_max_iter1")]
+    pub max_iter1: u32,
+    #[serde(default = "default_oversample")]
+    pub oversample: u32,
+    #[serde(default = "default_lowpass_cut")]
+    pub lowpass_cut: f64,
+    #[serde(default = "default_ceiling_mode")]
+    pub ceiling_mode: CeilingMode,
+    #[serde(default = "default_reference_mode")]
+    pub reference_mode: ReferenceMode,
+    #[serde(default = "default_high_cut")]
+    pub high_cut: f64,
+    #[serde(default = "default_low_cut")]
+    pub low_cut: f64,
+    #[serde(default = "default_mastering")]
+    pub mastering: bool,
     #[serde(default)]
     pub reference: Option<PathBuf>,
     pub backend: PathBuf,
@@ -142,7 +254,6 @@ pub struct Config {
     pub output_dir: PathBuf,
     pub loudness: f64,
     pub intensity: f64,
-    pub stereo: f64,
     pub ceiling: f64,
     pub sample_rate: u32,
     pub bit_depth: u32,
@@ -194,7 +305,17 @@ impl Settings {
         if evaluations == 0 {
             return Err("Evaluation budget must be positive.".into());
         }
-        Ok(Config {
+        let config = Config {
+            noise_mode: self.noise_mode,
+            max_iter2: integer(&self.max_iter2, "max_iter2")?,
+            max_iter1: integer(&self.max_iter1, "max_iter1")?,
+            oversample: integer(&self.oversample, "oversample")?,
+            lowpass_cut: number(&self.lowpass_cut, "lowpass_cut", 0.0, 22050.0)?,
+            ceiling_mode: self.ceiling_mode,
+            reference_mode: self.reference_mode,
+            high_cut: number(&self.high_cut, "high_cut", 0.0, 22050.0)?,
+            low_cut: number(&self.low_cut, "low_cut", 0.0, 22050.0)?,
+            mastering: self.mastering,
             reference: (!self.reference.is_empty()).then(|| PathBuf::from(&self.reference)),
             backend: PathBuf::from(&self.backend),
             ffmpeg: self.ffmpeg.clone(),
@@ -202,7 +323,6 @@ impl Settings {
             output_dir,
             loudness: number(&self.loudness, "Target loudness", -60.0, 0.0)?,
             intensity: number(&self.intensity, "Mastering intensity", 0.0, 1.0)?,
-            stereo: number(&self.stereo, "Stereo matching", 0.0, 1.0)?,
             ceiling: number(&self.ceiling, "True-peak ceiling", -20.0, 0.0)?,
             sample_rate,
             bit_depth,
@@ -217,7 +337,39 @@ impl Settings {
             pre_compression: self.pre_compression,
             format: self.format,
             solver: self.solver,
-        })
+        };
+        if config.low_cut >= 22050.0
+            || config.high_cut >= 22050.0
+            || config.high_cut == 0.0 && config.low_cut != 0.0
+            || config.high_cut != 0.0 && config.low_cut >= config.high_cut
+        {
+            return Err("Cut frequencies: use low < high, or set both to 0 to disable.".into());
+        }
+        if config.lowpass_cut <= 0.0
+            || config.oversample == 0
+            || config.max_iter1 == 0
+            || config.max_iter2 == 0
+        {
+            return Err(
+                "Lowpass peak frequency, oversampling and iteration limits must be positive."
+                    .into(),
+            );
+        }
+        if !config.oversample.is_power_of_two() || config.oversample > (i32::MAX as u32 / 44100) {
+            return Err(
+                "Oversampling: use a power of 2 (1, 2, 4, 8, …) within the DSP sample-rate limit."
+                    .into(),
+            );
+        }
+        if config.max_iter1 > i32::MAX as u32 || config.max_iter2 > i32::MAX as u32 {
+            return Err("Iteration limits exceed the backend integer range.".into());
+        }
+        if config.ceiling_mode == CeilingMode::LowpassTruePeak
+            && config.lowpass_cut > config.sample_rate.min(44100) as f64 / 2.0
+        {
+            return Err("Lowpass peak frequency must not exceed half the output sample rate (up to 22050 Hz).".into());
+        }
+        Ok(config)
     }
 }
 
@@ -245,6 +397,8 @@ impl std::fmt::Display for Status {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
+    #[serde(default)]
+    pub command: Option<String>,
     #[serde(default)]
     pub track_id: usize,
     #[serde(default)]
@@ -285,12 +439,105 @@ pub fn test_job(input: PathBuf, output: PathBuf, config: Config, id: usize) -> J
         analysis: None,
         analysis_error: None,
         limiting_error: None,
+        command: None,
     }
+}
+
+fn default_mastering() -> bool {
+    true
+}
+
+fn default_low_cut() -> f64 {
+    20.0
+}
+
+fn default_high_cut() -> f64 {
+    20000.0
+}
+
+fn default_reference_mode() -> ReferenceMode {
+    ReferenceMode::Loudness
+}
+
+fn default_ceiling_mode() -> CeilingMode {
+    CeilingMode::TruePeak
+}
+
+fn default_lowpass_cut() -> f64 {
+    15000.0
+}
+
+fn default_oversample() -> u32 {
+    1
+}
+
+fn default_max_iter1() -> u32 {
+    100
+}
+
+fn default_max_iter2() -> u32 {
+    400
+}
+
+fn default_noise_mode() -> NoiseMode {
+    NoiseMode::Linear
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn validates_filter_and_limiter_contracts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings {
+            output_dir: dir.path().display().to_string(),
+            ..Settings::default()
+        };
+        assert!(settings.parse().unwrap().preserve_bass);
+        settings.high_cut = "0".into();
+        assert!(settings.parse().is_err());
+        settings.low_cut = "0".into();
+        assert!(settings.parse().is_ok());
+        settings.high_cut = "22050".into();
+        assert!(settings.parse().is_err());
+        settings.high_cut = "20000".into();
+        settings.oversample = "3".into();
+        assert!(settings.parse().is_err());
+        settings.oversample = "4".into();
+        assert!(settings.parse().is_ok());
+        settings.max_iter1 = "0".into();
+        assert!(settings.parse().is_err());
+    }
+
+    #[test]
+    fn old_saved_configs_receive_backend_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            output_dir: dir.path().display().to_string(),
+            ..Settings::default()
+        };
+        let mut value = serde_json::to_value(settings.parse().unwrap()).unwrap();
+        for name in [
+            "mastering",
+            "low_cut",
+            "high_cut",
+            "reference_mode",
+            "ceiling_mode",
+            "lowpass_cut",
+            "oversample",
+            "max_iter1",
+            "max_iter2",
+            "noise_mode",
+        ] {
+            value.as_object_mut().unwrap().remove(name);
+        }
+        let config: Config = serde_json::from_value(value).unwrap();
+        assert!(config.mastering);
+        assert_eq!(config.high_cut, 20000.0);
+        assert_eq!(config.oversample, 1);
+        assert_eq!(config.noise_mode, NoiseMode::Linear);
+    }
+
     #[test]
     fn rejects_non_finite_values_and_invalid_depth() {
         let mut settings = Settings {

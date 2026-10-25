@@ -16,7 +16,7 @@ use iced::widget::{
 };
 use iced::{Element, Fill, Subscription, Task, Theme};
 use library::{Library, Track};
-use model::{Format, Job, Settings, Solver, Status};
+use model::{CeilingMode, Format, Job, NoiseMode, ReferenceMode, Settings, Solver, Status};
 use std::{
     collections::{HashSet, VecDeque},
     path::PathBuf,
@@ -43,13 +43,18 @@ fn main() -> iced::Result {
 }
 #[derive(Debug, Clone, Copy)]
 enum Field {
+    MaxIter2,
+    MaxIter1,
+    Oversample,
+    LowpassCut,
+    HighCut,
+    LowCut,
     Backend,
     Ffmpeg,
     Cache,
     OutputDir,
     Loudness,
     Intensity,
-    Stereo,
     Ceiling,
     SampleRate,
     BitDepth,
@@ -59,6 +64,10 @@ enum Field {
 }
 #[derive(Debug, Clone)]
 enum Message {
+    NoiseMode(NoiseMode),
+    CeilingMode(CeilingMode),
+    ReferenceMode(ReferenceMode),
+    Mastering(bool),
     Edit(Field, String),
     Input(String),
     AddInput,
@@ -93,6 +102,7 @@ enum Message {
     Prepared(PathBuf, Result<Arc<playback::Decoded>, String>),
     Graph(plots::Kind),
     Details,
+    CopyCommand(usize),
     StorageSize(u64),
     OpenLibrary,
     FolderOpened(Result<(), String>),
@@ -443,6 +453,7 @@ impl App {
             analysis: None,
             analysis_error: None,
             limiting_error: None,
+            command: None,
         });
         self.library.settings = self.draft.clone();
         self.running = true;
@@ -485,6 +496,22 @@ impl App {
                     }
                     Err(error) => self.error = Some(error),
                 }
+                save = true;
+            }
+            Message::Mastering(v) => {
+                self.draft.mastering = v;
+                save = true;
+            }
+            Message::ReferenceMode(v) => {
+                self.draft.reference_mode = v;
+                save = true;
+            }
+            Message::CeilingMode(v) => {
+                self.draft.ceiling_mode = v;
+                save = true;
+            }
+            Message::NoiseMode(v) => {
+                self.draft.noise_mode = v;
                 save = true;
             }
             Message::Format(v) => {
@@ -634,12 +661,27 @@ impl App {
                     save = true;
                 }
             }
+            Message::CopyCommand(id) => {
+                if let Some(command) = self
+                    .library
+                    .jobs
+                    .iter()
+                    .find(|job| job.id == id)
+                    .and_then(|job| job.command.clone())
+                {
+                    tasks.push(iced::clipboard::write(command));
+                }
+            }
             Message::Backend(id, update) => {
                 if !self.active.as_ref().is_some_and(|a| a.id == id) {
                     return Task::none();
                 }
                 if let Some(job) = self.library.jobs.iter_mut().find(|j| j.id == id) {
                     match update {
+                        backend::Update::Command(command) => {
+                            job.command = Some(command);
+                            save = true;
+                        }
                         backend::Update::Line(line) => {
                             if job.log.len() >= 400 {
                                 job.log.remove(0);
@@ -875,13 +917,18 @@ impl App {
     }
     fn field_mut(&mut self, field: Field) -> &mut String {
         match field {
+            Field::LowCut => &mut self.draft.low_cut,
+            Field::HighCut => &mut self.draft.high_cut,
+            Field::LowpassCut => &mut self.draft.lowpass_cut,
+            Field::Oversample => &mut self.draft.oversample,
+            Field::MaxIter1 => &mut self.draft.max_iter1,
+            Field::MaxIter2 => &mut self.draft.max_iter2,
             Field::Backend => &mut self.draft.backend,
             Field::Ffmpeg => &mut self.draft.ffmpeg,
             Field::Cache => &mut self.draft.cache,
             Field::OutputDir => &mut self.draft.output_dir,
             Field::Loudness => &mut self.draft.loudness,
             Field::Intensity => &mut self.draft.intensity,
-            Field::Stereo => &mut self.draft.stereo,
             Field::Ceiling => &mut self.draft.ceiling,
             Field::SampleRate => &mut self.draft.sample_rate,
             Field::BitDepth => &mut self.draft.bit_depth,
@@ -958,13 +1005,22 @@ fn measure(a: Option<&analysis::Analysis>, key: &str, unit: &str) -> String {
 }
 fn settings_from_config(c: &model::Config) -> Settings {
     Settings {
+        noise_mode: c.noise_mode,
+        max_iter2: c.max_iter2.to_string(),
+        max_iter1: c.max_iter1.to_string(),
+        oversample: c.oversample.to_string(),
+        lowpass_cut: c.lowpass_cut.to_string(),
+        ceiling_mode: c.ceiling_mode,
+        reference_mode: c.reference_mode,
+        high_cut: c.high_cut.to_string(),
+        low_cut: c.low_cut.to_string(),
+        mastering: c.mastering,
         backend: c.backend.display().to_string(),
         ffmpeg: c.ffmpeg.clone(),
         cache: c.cache.display().to_string(),
         output_dir: c.output_dir.display().to_string(),
         loudness: c.loudness.to_string(),
         intensity: c.intensity.to_string(),
-        stereo: c.stereo.to_string(),
         ceiling: c.ceiling.to_string(),
         sample_rate: c.sample_rate.to_string(),
         bit_depth: c.bit_depth.to_string(),
@@ -1000,6 +1056,28 @@ mod tests {
         app.selected = Some((0, None));
         app
     }
+    #[test]
+    fn new_processing_settings_survive_history_recall() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            output_dir: dir.path().display().to_string(),
+            mastering: false,
+            noise_mode: NoiseMode::Adaptive,
+            reference_mode: ReferenceMode::Rms,
+            ceiling_mode: CeilingMode::LowpassTruePeak,
+            oversample: "4".into(),
+            max_iter1: "60".into(),
+            max_iter2: "240".into(),
+            ..Settings::default()
+        };
+        let config = settings.parse().unwrap();
+        let restored = settings_from_config(&config).parse().unwrap();
+        assert_eq!(
+            serde_json::to_value(config).unwrap(),
+            serde_json::to_value(restored).unwrap()
+        );
+    }
+
     #[test]
     #[ignore = "Local profiling with an existing analyzed library"]
     fn profile_selection_save_cost() {
