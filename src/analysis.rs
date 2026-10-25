@@ -16,19 +16,64 @@ struct PlotData {
     loudness: Series,
     histogram: Series,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone)]
 pub struct Analysis {
     raw: Arc<Value>,
-    #[serde(skip)]
+    artifact: Option<PathBuf>,
     plots: Arc<OnceLock<PlotData>>,
 }
 impl Analysis {
     pub fn new(value: Value) -> Self {
         Self {
             raw: Arc::new(value),
+            artifact: None,
             plots: Arc::default(),
         }
+    }
+    pub fn path(&self) -> Option<&Path> {
+        self.artifact.as_deref()
+    }
+
+    // Reports live outside audio/job directories so removing an input cannot
+    // invalidate a reference retained by another mastering.
+    pub fn store(root: &Path, bytes: &[u8]) -> Result<Self, String> {
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        let value: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        if !value.is_object() {
+            return Err("Analyzer did not return an object.".into());
+        }
+        let directory = root.join("analyses");
+        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        let digest: String = Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let path = directory.join(format!("{digest}.json"));
+        if path.exists() {
+            crate::library::verify(&path, &digest)?;
+        } else {
+            let mut temporary =
+                tempfile::NamedTempFile::new_in(&directory).map_err(|e| e.to_string())?;
+            temporary.write_all(bytes).map_err(|e| e.to_string())?;
+            temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+            temporary
+                .persist_noclobber(&path)
+                .map_err(|e| e.to_string())?;
+        }
+        let mut result = Self::new(value);
+        result.artifact = Some(path);
+        Ok(result)
+    }
+
+    pub fn persist(&mut self, root: &Path) -> Result<(), String> {
+        if self.artifact.is_none() {
+            *self = Self::store(
+                root,
+                &serde_json::to_vec(&*self.raw).map_err(|e| e.to_string())?,
+            )?;
+        }
+        Ok(())
     }
     fn points(&self, name: &str, x: &str, y: &str) -> Series {
         self.raw
@@ -89,7 +134,45 @@ pub fn executable(backend: &Path) -> PathBuf {
     })
 }
 
+impl Serialize for Analysis {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if let Some(path) = &self.artifact {
+            #[derive(Serialize)]
+            struct Reference<'a> {
+                analysis_file: &'a Path,
+            }
+            Reference {
+                analysis_file: path,
+            }
+            .serialize(serializer)
+        } else {
+            self.raw.serialize(serializer)
+        }
+    }
+}
+impl<'de> Deserialize<'de> for Analysis {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        if let Some(path) = value.get("analysis_file").and_then(Value::as_str) {
+            let path = PathBuf::from(path);
+            let expected = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| serde::de::Error::custom("Invalid analysis path"))?;
+            crate::library::verify(&path, expected).map_err(serde::de::Error::custom)?;
+            let bytes = std::fs::read(&path).map_err(serde::de::Error::custom)?;
+            let raw = serde_json::from_slice(&bytes).map_err(serde::de::Error::custom)?;
+            let mut result = Self::new(raw);
+            result.artifact = Some(path);
+            Ok(result)
+        } else {
+            Ok(Self::new(value))
+        }
+    }
+}
+
 pub async fn run(
+    root: PathBuf,
     input: PathBuf,
     expected: String,
     backend: PathBuf,
@@ -169,16 +252,7 @@ pub async fn run(
     if !value.is_object() {
         return Err("Analyzer did not return an object.".into());
     }
-    let report = input.with_extension("analysis.json");
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(input.parent().ok_or("Missing audio directory")?)
-            .map_err(|e| e.to_string())?;
-    use std::io::Write;
-    temporary
-        .write_all(&output.stdout)
-        .map_err(|e| e.to_string())?;
-    temporary.persist(report).map_err(|e| e.to_string())?;
-    let analysis = Analysis::new(value);
+    let analysis = Analysis::store(&root, &output.stdout)?;
     analysis.plot_data();
     Ok(analysis)
 }
@@ -228,6 +302,7 @@ mod tests {
         std::fs::write(&analyzer,"#!/bin/sh\n[ \"$1\" = '--input' ] || exit 4\n[ \"$(cat \"$2\")\" = normalized ] || exit 5\nprintf '{\"loudness\":-10,\"bands\":[],\"covariance\":[]}'\n").unwrap();
         std::fs::set_permissions(&analyzer, std::fs::Permissions::from_mode(0o755)).unwrap();
         let result = run(
+            dir.path().to_path_buf(),
             input.clone(),
             crate::library::hash(&input).unwrap(),
             dir.path().join("phase_limiter"),
@@ -237,6 +312,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.number("loudness"), Some(-10.));
-        assert!(input.with_extension("analysis.json").is_file());
+        assert!(result.path().unwrap().is_file());
     }
 }

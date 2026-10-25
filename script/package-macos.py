@@ -30,7 +30,7 @@ with (app / "Contents" / "Info.plist").open("wb") as output:
         "CFBundleName": "Phaselimiter",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": "0.2.0",
-        "CFBundleVersion": "5",
+        "CFBundleVersion": "6",
         "LSMinimumSystemVersion": "14.0",
         "NSHighResolutionCapable": True,
     }, output)

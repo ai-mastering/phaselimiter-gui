@@ -452,6 +452,9 @@ impl App {
             let settings = self.draft.clone();
             return Task::perform(
                 analysis::run(
+                    self.root
+                        .clone()
+                        .expect("Library available during analysis"),
                     input,
                     hash,
                     PathBuf::from(settings.backend),
@@ -508,39 +511,27 @@ impl App {
         self.library.next_id += 1;
         let dir = root.join("jobs").join(id.to_string());
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let mut config = self.draft.parse()?;
+        let config = self.draft.parse()?;
         if let Some(reference) = &config.reference {
-            let bytes = std::fs::read(reference).map_err(|e| e.to_string())?;
-            if let Some(track) = self.library.tracks.iter().find(|t| {
-                t.input.with_extension("analysis.json") == *reference && t.analysis.is_some()
-            }) {
-                let expected = serde_json::to_value(track.analysis.as_ref().unwrap())
-                    .map_err(|e| e.to_string())?;
-                let actual: serde_json::Value =
-                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-                if expected != actual {
-                    return Err(
-                        "Stored reference analysis has changed. Analyze the source again.".into(),
-                    );
-                }
-            } else {
-                let saved = self
-                    .library
-                    .jobs
-                    .iter()
-                    .find(|j| j.config.reference.as_ref() == Some(reference))
-                    .ok_or("Choose an analyzed library audio as reference.")?;
-                library::verify(
-                    reference,
-                    saved
-                        .reference_hash
-                        .as_deref()
-                        .ok_or("Reference checksum is missing.")?,
-                )?;
-            }
-            let snapshot = dir.join("reference.json");
-            std::fs::write(&snapshot, bytes).map_err(|e| e.to_string())?;
-            config.reference = Some(snapshot);
+            let expected = self
+                .library
+                .tracks
+                .iter()
+                .filter_map(|t| t.analysis.as_ref())
+                .find(|a| a.path() == Some(reference.as_path()))
+                .and_then(|a| a.path())
+                .and_then(|p| p.file_stem())
+                .and_then(|s| s.to_str())
+                .map(str::to_owned)
+                .or_else(|| {
+                    self.library
+                        .jobs
+                        .iter()
+                        .find(|j| j.config.reference.as_ref() == Some(reference))
+                        .and_then(|j| j.reference_hash.clone())
+                })
+                .ok_or("Choose an analyzed library audio as reference.")?;
+            library::verify(reference, &expected)?;
         }
         let output = dir.join("output").with_extension(config.format.extension());
         let reference_hash = config
@@ -683,10 +674,11 @@ impl App {
                     if key.1.is_none() {
                         if let Some(track) = self.library.tracks.iter().find(|t| t.id == key.0) {
                             let reference = track
-                                .input
-                                .with_extension("analysis.json")
-                                .display()
-                                .to_string();
+                                .analysis
+                                .as_ref()
+                                .and_then(|a| a.path())
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_default();
                             if self.draft.reference == reference {
                                 self.draft.reference.clear();
                             }
@@ -1065,8 +1057,10 @@ impl App {
                 .filter(|t| t.analysis.is_some())
                 .map(|t| ReferenceChoice {
                     path: t
-                        .input
-                        .with_extension("analysis.json")
+                        .analysis
+                        .as_ref()
+                        .and_then(|a| a.path())
+                        .unwrap()
                         .display()
                         .to_string(),
                     label: format!("Reference: {} · #{}", t.name, t.id),
@@ -1284,24 +1278,31 @@ mod tests {
         assert!(!app.output_side);
     }
     #[test]
-    fn reference_is_snapshotted_for_each_mastering() {
+    fn reference_is_shared_and_survives_source_removal() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
         let report = serde_json::json!({"bands":[],"covariance":[]});
         let track = &mut app.library.tracks[0];
-        track.analysis = Some(analysis::Analysis::new(report.clone()));
-        let report_path = track.input.with_extension("analysis.json");
-        std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+        track.analysis = Some(
+            analysis::Analysis::store(dir.path(), &serde_json::to_vec(&report).unwrap()).unwrap(),
+        );
+        let report_path = track
+            .analysis
+            .as_ref()
+            .unwrap()
+            .path()
+            .unwrap()
+            .to_path_buf();
         app.draft.reference = report_path.display().to_string();
         app.queue_master().unwrap();
         let job = &app.library.jobs[0];
-        assert_ne!(job.config.reference.as_ref().unwrap(), &report_path);
+        assert_eq!(job.config.reference.as_ref().unwrap(), &report_path);
         library::verify(
             job.config.reference.as_ref().unwrap(),
             job.reference_hash.as_ref().unwrap(),
         )
         .unwrap();
-        std::fs::write(report_path, b"changed").unwrap();
+        std::fs::remove_dir_all(app.library.tracks[0].input.parent().unwrap()).unwrap();
         let _ = app.update(Message::UseSettings(job.id));
         app.queue_master().unwrap();
         assert!(app.library.jobs[1].config.reference.is_some());
