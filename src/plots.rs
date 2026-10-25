@@ -1,9 +1,11 @@
 use crate::Message;
+use crate::analysis::Series;
 use iced::widget::{
     Action,
     canvas::{self, Frame, Geometry, Path, Stroke},
 };
 use iced::{Color, Point, Rectangle, Renderer, Theme, mouse};
+use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -24,15 +26,37 @@ impl std::fmt::Display for Kind {
     }
 }
 pub struct Plot {
-    pub input: Vec<(f32, f32)>,
-    pub output: Vec<(f32, f32)>,
+    pub input: Series,
+    pub output: Series,
     pub waveform: bool,
     pub logarithmic: bool,
     pub position: f32,
     pub region: Option<(f32, f32)>,
 }
+#[derive(Default)]
+pub struct State {
+    drag: Option<f32>,
+    cached: RefCell<VecDeque<CachedPlot>>,
+    #[cfg(test)]
+    builds: std::cell::Cell<usize>,
+}
+struct CachedPlot {
+    input: Series,
+    output: Series,
+    waveform: bool,
+    logarithmic: bool,
+    geometry: canvas::Cache,
+}
+impl CachedPlot {
+    fn matches(&self, plot: &Plot) -> bool {
+        Arc::ptr_eq(&self.input, &plot.input)
+            && Arc::ptr_eq(&self.output, &plot.output)
+            && self.waveform == plot.waveform
+            && self.logarithmic == plot.logarithmic
+    }
+}
 impl canvas::Program<Message> for Plot {
-    type State = Option<f32>;
+    type State = State;
     fn update(
         &self,
         state: &mut Self::State,
@@ -46,11 +70,11 @@ impl canvas::Program<Message> for Plot {
         match event {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_in(bounds)?;
-                *state = Some((p.x / bounds.width).clamp(0., 1.));
+                state.drag = Some((p.x / bounds.width).clamp(0., 1.));
                 Some(Action::capture())
             }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                let start = state.take()?;
+                let start = state.drag.take()?;
                 let p = cursor
                     .position()
                     .map(|p| ((p.x - bounds.x) / bounds.width).clamp(0., 1.))
@@ -66,18 +90,68 @@ impl canvas::Program<Message> for Plot {
     }
     fn draw(
         &self,
-        _: &Self::State,
+        state: &Self::State,
         renderer: &Renderer,
         _: &Theme,
         bounds: Rectangle,
         _: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            bounds.size(),
-            Color::from_rgb8(245, 247, 250),
-        );
+        let mut cached = state.cached.borrow_mut();
+        let entry = if let Some(index) = cached.iter().position(|entry| entry.matches(self)) {
+            cached.remove(index).unwrap()
+        } else {
+            CachedPlot {
+                input: self.input.clone(),
+                output: self.output.clone(),
+                waveform: self.waveform,
+                logarithmic: self.logarithmic,
+                geometry: canvas::Cache::new(),
+            }
+        };
+        cached.push_back(entry);
+        if cached.len() > 8 {
+            cached.pop_front();
+        }
+        let base = cached
+            .back()
+            .unwrap()
+            .geometry
+            .draw(renderer, bounds.size(), |frame| {
+                #[cfg(test)]
+                state.builds.set(state.builds.get() + 1);
+                frame.fill_rectangle(
+                    Point::ORIGIN,
+                    bounds.size(),
+                    Color::from_rgb8(245, 247, 250),
+                );
+                self.draw_static(frame, bounds);
+            });
+        let mut layers = vec![base];
+        if self.waveform {
+            let mut overlay = Frame::new(renderer, bounds.size());
+            if let Some((start, end)) = self.region {
+                overlay.fill_rectangle(
+                    Point::new(bounds.width * start, 0.),
+                    iced::Size::new(bounds.width * (end - start), bounds.height),
+                    Color::from_rgba(0.2, 0.5, 0.9, 0.15),
+                );
+            }
+            overlay.stroke(
+                &Path::line(
+                    Point::new(bounds.width * self.position, 0.),
+                    Point::new(bounds.width * self.position, bounds.height),
+                ),
+                Stroke::default()
+                    .with_color(Color::from_rgb8(20, 75, 170))
+                    .with_width(2.),
+            );
+            layers.push(overlay.into_geometry());
+        }
+        layers
+    }
+}
+impl Plot {
+    fn draw_static(&self, frame: &mut Frame, bounds: Rectangle) {
         let transform = |x: f32| {
             if self.logarithmic {
                 x.max(20.).log10()
@@ -111,7 +185,11 @@ impl canvas::Program<Message> for Plot {
             }
         };
         let margin = if self.waveform { 0. } else { 38. };
-        let w = (bounds.width - margin - 8.).max(1.);
+        let w = if self.waveform {
+            bounds.width.max(1.)
+        } else {
+            (bounds.width - margin - 8.).max(1.)
+        };
         let h = (bounds.height - 24.).max(1.);
         for i in 0..=4 {
             let y = 8. + h * i as f32 / 4.;
@@ -135,22 +213,13 @@ impl canvas::Program<Message> for Plot {
                 });
             }
         }
-        if self.waveform
-            && let Some((start, end)) = self.region
-        {
-            frame.fill_rectangle(
-                Point::new(w * start, 0.),
-                iced::Size::new(w * (end - start), bounds.height),
-                Color::from_rgba(0.2, 0.5, 0.9, 0.15),
-            );
-        }
         for (series, color) in [
             (&self.input, Color::from_rgb8(125, 137, 152)),
             (&self.output, Color::from_rgb8(35, 105, 210)),
         ] {
             let path = Path::new(|builder| {
                 let mut first = true;
-                for &(x, y) in series {
+                for &(x, y) in series.iter() {
                     if self.logarithmic && x < 20. {
                         continue;
                     }
@@ -168,17 +237,50 @@ impl canvas::Program<Message> for Plot {
             });
             frame.stroke(&path, Stroke::default().with_color(color).with_width(1.5));
         }
-        if self.waveform {
-            frame.stroke(
-                &Path::line(
-                    Point::new(w * self.position, 0.),
-                    Point::new(w * self.position, bounds.height),
-                ),
-                Stroke::default()
-                    .with_color(Color::from_rgb8(20, 75, 170))
-                    .with_width(2.),
-            );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn plot(input: Series) -> Plot {
+        Plot {
+            input,
+            output: crate::analysis::empty_series(),
+            waveform: true,
+            logarithmic: false,
+            position: 0.,
+            region: None,
         }
-        vec![frame.into_geometry()]
+    }
+    #[test]
+    fn cursor_loop_and_revisiting_a_source_reuse_static_geometry() {
+        let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(16.));
+        let state = State::default();
+        let bounds = Rectangle::with_size(iced::Size::new(800., 100.));
+        let mut a = plot(Arc::from([(0., 0.1), (0.5, -0.2), (1., 0.3)]));
+        let b = plot(Arc::from([(0., 0.4), (0.5, -0.1), (1., 0.2)]));
+        let draw = |plot: &Plot, bounds| {
+            <Plot as canvas::Program<Message>>::draw(
+                plot,
+                &state,
+                &renderer,
+                &Theme::Light,
+                bounds,
+                mouse::Cursor::Unavailable,
+            )
+        };
+        draw(&a, bounds);
+        assert_eq!(state.builds.get(), 1);
+        a.position = 0.7;
+        a.region = Some((0.2, 0.6));
+        draw(&a, bounds);
+        assert_eq!(state.builds.get(), 1);
+        draw(&b, bounds);
+        assert_eq!(state.builds.get(), 2);
+        draw(&a, bounds);
+        assert_eq!(state.builds.get(), 2);
+        draw(&a, Rectangle::with_size(iced::Size::new(1000., 100.)));
+        assert_eq!(state.builds.get(), 3);
     }
 }

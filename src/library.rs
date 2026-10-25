@@ -1,8 +1,10 @@
 //! Durable snapshots. External source/export paths are never used for playback.
+mod saver;
 use crate::{
     analysis::Analysis,
     model::{Job, Settings, Status},
 };
+pub use saver::SaveWorker;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -23,7 +25,7 @@ pub struct Track {
     pub analysis_error: Option<String>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Library {
     pub settings: Settings,
@@ -170,8 +172,13 @@ impl Library {
     pub fn save(&self, root: &Path) -> Result<(), String> {
         fs::create_dir_all(root).map_err(|e| e.to_string())?;
         let mut temporary = tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
-        serde_json::to_writer(&mut temporary, self).map_err(|e| e.to_string())?;
-        temporary.flush().map_err(|e| e.to_string())?;
+        {
+            // A JSON serializer writes many small tokens. Buffer them before
+            // reaching the filesystem (especially shared/remote home folders).
+            let mut buffered = std::io::BufWriter::with_capacity(65536, &mut temporary);
+            serde_json::to_writer(&mut buffered, self).map_err(|e| e.to_string())?;
+            buffered.flush().map_err(|e| e.to_string())?;
+        }
         temporary.as_file().sync_all().map_err(|e| e.to_string())?;
         temporary
             .persist(root.join("library.json"))

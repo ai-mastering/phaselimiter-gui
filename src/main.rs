@@ -106,6 +106,8 @@ struct Active {
 struct App {
     library: Library,
     root: Option<PathBuf>,
+    // Drop the save worker before releasing the library lock.
+    save_worker: Option<library::SaveWorker>,
     _library_lock: Option<std::fs::File>,
     draft: Settings,
     input: String,
@@ -146,6 +148,7 @@ impl Default for App {
         Self {
             library,
             root: None,
+            save_worker: None,
             _library_lock: None,
             draft,
             input: String::new(),
@@ -186,9 +189,12 @@ impl App {
         let mut app = Self::default();
         match library::default_root().and_then(|root| {
             let lock = library::lock(&root)?;
-            Library::load(&root).map(|library| (root, library, lock))
+            let library = Library::load(&root)?;
+            let worker = library::SaveWorker::new(root.clone())?;
+            Ok((root, library, lock, worker))
         }) {
-            Ok((root, library, lock)) => {
+            Ok((root, library, lock, worker)) => {
+                app.save_worker = Some(worker);
                 app._library_lock = Some(lock);
                 app.draft = library
                     .draft
@@ -262,8 +268,25 @@ impl App {
         self.library.output_side = Some(self.output_side);
         self.library.equalize = Some(self.equalize);
         self.library.draft = Some(self.draft.clone());
-        if let Some(root) = &self.root
-            && let Err(error) = self.library.save(root)
+        let result = if let Some(worker) = &self.save_worker {
+            worker.save(self.library.clone())
+        } else if let Some(root) = &self.root {
+            self.library.save(root)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = result {
+            self.error = Some(format!("Could not save history: {error}"));
+            return false;
+        }
+        true
+    }
+    fn save_sync(&mut self) -> bool {
+        if !self.save() {
+            return false;
+        }
+        if let Some(worker) = &self.save_worker
+            && let Err(error) = worker.flush()
         {
             self.error = Some(format!("Could not save history: {error}"));
             return false;
@@ -706,7 +729,7 @@ impl App {
                         self.loading = false;
                     }
                     // Save the manifest before removing the owned files.
-                    if !self.save() {
+                    if !self.save_sync() {
                         return Task::none();
                     }
                     if let Some(root) = &self.root {
@@ -864,6 +887,11 @@ impl App {
                 save = true;
             }
             Message::Tick => {
+                if let Some(worker) = &self.save_worker
+                    && let Some(error) = worker.error()
+                {
+                    self.error = Some(format!("Could not save history: {error}"));
+                }
                 let (p, d, _) = self.player.status();
                 self.position = p;
                 self.duration = d;
@@ -962,8 +990,10 @@ impl App {
             && self.finalizing.is_empty()
             && self.importing == 0
         {
-            self.save();
-            return iced::exit();
+            if self.save_sync() {
+                return iced::exit();
+            }
+            self.closing = false;
         }
         tasks.push(self.start_next());
         tasks.push(self.start_analysis());
@@ -1122,6 +1152,69 @@ mod tests {
         app
     }
     #[test]
+    #[ignore = "Local profiling with an existing analyzed library"]
+    fn profile_selection_save_cost() {
+        let source = std::env::var("PHASELIMITER_PROFILE_LIBRARY")
+            .expect("set PHASELIMITER_PROFILE_LIBRARY");
+        let original = Library::load(std::path::Path::new(&source)).unwrap();
+        let mut state = original.clone();
+        for copy in 1..20 {
+            state
+                .tracks
+                .extend(original.tracks.iter().cloned().map(|mut t| {
+                    t.id += copy * 100;
+                    t
+                }));
+            state
+                .jobs
+                .extend(original.jobs.iter().cloned().map(|mut j| {
+                    j.id += copy * 100;
+                    j.track_id += copy * 100;
+                    j
+                }));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        state.save(dir.path()).unwrap();
+        let synchronous = start.elapsed();
+        let worker = library::SaveWorker::new(dir.path().to_path_buf()).unwrap();
+        let start = std::time::Instant::now();
+        worker.save(state.clone()).unwrap();
+        let dispatch = start.elapsed();
+        worker.flush().unwrap();
+        eprintln!(
+            "PROFILE: {} inputs, {} results; synchronous save {:.2} ms; snapshot + background dispatch {:.3} ms",
+            state.tracks.len(),
+            state.jobs.len(),
+            synchronous.as_secs_f64() * 1000.,
+            dispatch.as_secs_f64() * 1000.
+        );
+    }
+    #[test]
+    fn history_selection_defers_storage_errors_until_the_background_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let blocked = dir.path().join("not-a-directory");
+        std::fs::write(&blocked, b"keep").unwrap();
+        app.save_worker = Some(library::SaveWorker::new(blocked).unwrap());
+        let path = app.library.tracks[0].input.clone();
+        app.prepared.insert(
+            path.clone(),
+            playback::test_audio(&[[0.2; 2]; 1000], Some(&path)),
+        );
+        let _ = app.update(Message::Select((0, None)));
+        assert!(app.loaded);
+        assert!(!app.loading);
+        assert!(app.error.is_none());
+        assert!(app.save_worker.as_ref().unwrap().flush().is_err());
+        let _ = app.update(Message::Tick);
+        assert!(
+            app.error
+                .as_ref()
+                .is_some_and(|e| e.contains("Could not save history"))
+        );
+    }
+    #[test]
     fn ready_cache_selection_does_not_enter_preparing_or_discard_other_audio() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
@@ -1196,7 +1289,7 @@ mod tests {
         let mut app = app_with_track(dir.path());
         let report = serde_json::json!({"bands":[],"covariance":[]});
         let track = &mut app.library.tracks[0];
-        track.analysis = Some(analysis::Analysis(report.clone()));
+        track.analysis = Some(analysis::Analysis::new(report.clone()));
         let report_path = track.input.with_extension("analysis.json");
         std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
         app.draft.reference = report_path.display().to_string();

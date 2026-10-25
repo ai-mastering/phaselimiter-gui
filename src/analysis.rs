@@ -2,15 +2,36 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, OnceLock};
 
+pub type Series = Arc<[(f32, f32)]>;
+pub fn empty_series() -> Series {
+    static EMPTY: OnceLock<Series> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::from([])).clone()
+}
+#[derive(Debug, Default)]
+struct PlotData {
+    waveform: Series,
+    spectrum: Series,
+    loudness: Series,
+    histogram: Series,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Analysis(pub Value);
+#[serde(transparent)]
+pub struct Analysis {
+    raw: Arc<Value>,
+    #[serde(skip)]
+    plots: Arc<OnceLock<PlotData>>,
+}
 impl Analysis {
-    pub fn number(&self, name: &str) -> Option<f64> {
-        self.0.get(name)?.as_f64().filter(|x| x.is_finite())
+    pub fn new(value: Value) -> Self {
+        Self {
+            raw: Arc::new(value),
+            plots: Arc::default(),
+        }
     }
-    pub fn series(&self, name: &str, x: &str, y: &str) -> Vec<(f32, f32)> {
-        self.0
+    fn points(&self, name: &str, x: &str, y: &str) -> Series {
+        self.raw
             .get(name)
             .and_then(Value::as_array)
             .into_iter()
@@ -22,18 +43,41 @@ impl Analysis {
             })
             .collect()
     }
-    pub fn waveform(&self) -> Vec<(f32, f32)> {
-        let values = self.0.get("waveform").and_then(Value::as_array);
-        let count = values.map_or(0, Vec::len).max(1) as f32;
-        values
-            .into_iter()
-            .flatten()
-            .enumerate()
-            .filter_map(|(i, v)| {
-                let y = v.as_f64()? as f32;
-                y.is_finite().then_some((i as f32 / count, y))
-            })
-            .collect()
+    fn plot_data(&self) -> &PlotData {
+        self.plots.get_or_init(|| {
+            let values = self.raw.get("waveform").and_then(Value::as_array);
+            let count = values.map_or(0, Vec::len).max(1) as f32;
+            let waveform = values
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .filter_map(|(i, v)| {
+                    let y = v.as_f64()? as f32;
+                    y.is_finite().then_some((i as f32 / count, y))
+                })
+                .collect();
+            PlotData {
+                waveform,
+                spectrum: self.points("spectrum", "hz", "db"),
+                loudness: self.points("loudness_time_series", "sec", "db"),
+                histogram: self.points("histogram", "db", "frequency"),
+            }
+        })
+    }
+    pub fn number(&self, name: &str) -> Option<f64> {
+        self.raw.get(name)?.as_f64().filter(|x| x.is_finite())
+    }
+    pub fn series(&self, name: &str, x: &str, y: &str) -> Series {
+        let data = self.plot_data();
+        match (name, x, y) {
+            ("spectrum", "hz", "db") => data.spectrum.clone(),
+            ("loudness_time_series", "sec", "db") => data.loudness.clone(),
+            ("histogram", "db", "frequency") => data.histogram.clone(),
+            _ => self.points(name, x, y),
+        }
+    }
+    pub fn waveform(&self) -> Series {
+        self.plot_data().waveform.clone()
     }
 }
 
@@ -134,20 +178,36 @@ pub async fn run(
         .write_all(&output.stdout)
         .map_err(|e| e.to_string())?;
     temporary.persist(report).map_err(|e| e.to_string())?;
-    Ok(Analysis(value))
+    let analysis = Analysis::new(value);
+    analysis.plot_data();
+    Ok(analysis)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
+    fn clones_share_plot_data_and_saved_json_remains_compatible() {
+        let raw = serde_json::json!({"waveform":[0.1,0.2],"spectrum":[{"hz":100,"db":-10}]});
+        let analysis = Analysis::new(raw.clone());
+        let other = analysis.clone();
+        assert!(Arc::ptr_eq(&analysis.waveform(), &other.waveform()));
+        assert!(Arc::ptr_eq(
+            &analysis.series("spectrum", "hz", "db"),
+            &other.series("spectrum", "hz", "db")
+        ));
+        assert_eq!(serde_json::to_value(&analysis).unwrap(), raw);
+        let restored: Analysis = serde_json::from_value(raw).unwrap();
+        assert_eq!(restored.waveform().len(), 2);
+    }
+    #[test]
     fn reads_comparison_series_and_ignores_missing_metrics() {
-        let analysis = Analysis(
+        let analysis = Analysis::new(
             serde_json::json!({"loudness":-9.2,"spectrum":[{"hz":100,"db":-20},{"hz":200}],"waveform":[0.1,-0.2]}),
         );
         assert_eq!(analysis.number("loudness"), Some(-9.2));
         assert_eq!(analysis.number("true_peak"), None);
-        assert_eq!(analysis.series("spectrum", "hz", "db"), vec![(100., -20.)]);
+        assert_eq!(&*analysis.series("spectrum", "hz", "db"), &[(100., -20.)]);
         assert_eq!(analysis.waveform().len(), 2);
     }
     #[cfg(unix)]

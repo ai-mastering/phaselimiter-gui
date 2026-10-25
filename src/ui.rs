@@ -177,8 +177,9 @@ impl App {
             let listening = self.listening_analysis();
             detail = detail.push(
                 canvas(plots::Plot {
-                    input: listening.map_or_else(Vec::new, analysis::Analysis::waveform),
-                    output: Vec::new(),
+                    input: listening
+                        .map_or_else(analysis::empty_series, analysis::Analysis::waveform),
+                    output: analysis::empty_series(),
                     waveform: true,
                     logarithmic: false,
                     position: (self.position / self.duration.max(0.001)) as f32,
@@ -265,7 +266,7 @@ impl App {
                 .align_y(iced::Center),
             );
             let series = |a: Option<&analysis::Analysis>| {
-                a.map_or_else(Vec::new, |a| match self.graph {
+                a.map_or_else(analysis::empty_series, |a| match self.graph {
                     plots::Kind::Spectrum => a.series("spectrum", "hz", "db"),
                     plots::Kind::Loudness => a.series("loudness_time_series", "sec", "db"),
                     plots::Kind::Histogram => a.series("histogram", "db", "frequency"),
