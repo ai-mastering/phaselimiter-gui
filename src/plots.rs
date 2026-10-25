@@ -7,6 +7,8 @@ use iced::widget::{
 use iced::{Color, Point, Rectangle, Renderer, Theme, mouse};
 use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
+const CACHE_ENTRIES: usize = 100;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Spectrum,
@@ -119,7 +121,7 @@ impl canvas::Program<Message> for Plot {
             self.draw_static(frame, bounds);
         });
         cached.push_back(entry);
-        if cached.len() > 8 {
+        if cached.len() > CACHE_ENTRIES {
             cached.pop_front();
         }
         let mut layers = vec![base];

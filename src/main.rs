@@ -25,6 +25,9 @@ use std::{
     },
 };
 
+// Decoded files are disk-backed; RAM prefetch has a separate mixer limit.
+const PCM_CACHE_ENTRIES: usize = 100;
+
 type AudioKey = (usize, Option<usize>);
 fn main() -> iced::Result {
     let previous_hook = std::panic::take_hook();
@@ -908,7 +911,7 @@ impl App {
                             self.prepared_order.retain(|p| p != &path);
                             self.prepared_order.push_back(path.clone());
                             self.prepared.insert(path, audio.clone());
-                            while self.prepared_order.len() > 8 {
+                            while self.prepared_order.len() > PCM_CACHE_ENTRIES {
                                 if let Some(old) = self.prepared_order.pop_front() {
                                     self.prepared.remove(&old);
                                 }
