@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   build:
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -19,43 +20,144 @@ jobs:
             target: x86_64-pc-windows-msvc
           - os: macos-15-intel
             target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     env:
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      BUILD_JOBS: '2'
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
-      - name: Linux windowing and GUI test tools
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build orchestration tools
+        run: python -m pip install cmake==3.27.9 ninja==1.13.0
+      - name: Linux build and windowing tools
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev xvfb xauth python3-xlib
-      - name: Install pinned Rust toolchain
+          sudo apt-get install -y build-essential nasm pkg-config patchelf ffmpeg libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev xvfb xauth
+          python -m pip install python-xlib==0.33
+      - name: macOS build tools (runner's official Xcode SDK)
+        if: runner.os == 'macOS'
+        run: |
+          brew install nasm pkgconf ffmpeg
+          xcrun --sdk macosx --show-sdk-path
+      - name: Windows test-only FFmpeg (upstream H.264 visualizer checks)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          install: make nasm diffutils mingw-w64-x86_64-gcc mingw-w64-x86_64-pkgconf
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+      - name: Verify native MSVC linker
+        if: runner.os == 'Windows'
+        run: |
+          $linker = (Get-Command link.exe -CommandType Application).Source
+          if (-not $env:VCToolsInstallDir -or -not $linker.StartsWith($env:VCToolsInstallDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Expected the Visual Studio linker, found: $linker"
+          }
+          Write-Host "MSVC linker: $linker"
+      - name: Read pinned backend revision
+        id: backend
         shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          backend = json.load(open('packaging/audio-sources.json'))['backend']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('repository=' + backend['repository'], file=output)
+              print('revision=' + backend['revision'], file=output)
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.backend.outputs.repository }}
+          ref: ${{ steps.backend.outputs.revision }}
+          path: build/audio/backend
+          submodules: recursive
+      - uses: actions/cache@v4
+        with:
+          path: build/audio/downloads
+          key: audio-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packaging/audio-sources.json') }}
+      - name: Packaging contracts
+        run: python script/test-packaging.py -v
+      - name: Install pinned Rust toolchain
         run: rustup show
-      - name: Format
+      - name: GUI format
         run: cargo fmt --check
-      - name: Test
+      - name: GUI tests
         run: cargo test --locked
-      - name: Build
+      - name: GUI release build
         run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Real X11 file drop
         if: runner.os == 'Linux'
-        run: xvfb-run -a python3 script/test-x11-drop.py target/${{ matrix.target }}/release/phaselimiter-gui
-      - name: Package macOS application
-        if: runner.os == 'macOS'
-        run: python3 script/package-macos.py ${{ matrix.target }}
-      - name: Package Windows application
+        run: xvfb-run -a python script/test-x11-drop.py target/${{ matrix.target }}/release/phaselimiter-gui
+      - name: Build LGPL FFmpeg, LAME and zlib (Unix)
+        if: runner.os != 'Windows'
+        run: bash script/build-ffmpeg.sh
+      - name: Build LGPL FFmpeg, LAME and zlib (MinGW)
         if: runner.os == 'Windows'
-        run: python script/package-windows.py
-      - name: Inspect Windows DLL imports
+        shell: msys2 {0}
+        env:
+          PYTHON: python
+        run: bash script/build-ffmpeg.sh
+      - name: Build backend libraries
+        run: python script/build-audio.py dependencies
+      - name: Build phaselimiter
+        run: python script/build-audio.py backend
+      - name: Backend CLI and component tests
+        timeout-minutes: 25
+        run: python script/test-audio.py --phase cli
+      - name: Backend DSP unit tests
+        timeout-minutes: 20
+        run: python script/test-audio.py --phase unit
+      - name: Native sound-quality cache
+        timeout-minutes: 20
+        run: python script/test-audio.py --phase cache
+      - name: Package complete portable distribution
+        if: runner.os != 'Windows'
+        run: |
+          extra=()
+          if [[ "$RUNNER_OS" == Linux ]]; then extra+=(--sources); fi
+          python script/package-distribution.py --target '${{ matrix.target }}' ${extra[@]+"${extra[@]}"}
+      - name: Package complete Windows portable distribution
         if: runner.os == 'Windows'
-        run: python script/analyze-windows.py target/${{ matrix.target }}/release/phaselimiter-gui.exe --check-no-vc-runtime
+        run: python script/package-distribution.py --target ${{ matrix.target }}
+      - name: Test extracted distribution without development runtime paths
+        run: |
+          python script/test-distribution.py --archive dist/${{ matrix.target }}/Phaselimiter-${{ matrix.target }}.${{ runner.os == 'Linux' && 'tar.gz' || 'zip' }}
+      - name: Packaged GUI real X11 file drop
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python script/test-x11-drop.py dist/${{ matrix.target }}/Phaselimiter/phaselimiter-gui
+      - name: Inspect Windows GUI imports
+        if: runner.os == 'Windows'
+        run: python script/analyze-windows.py dist/${{ matrix.target }}/Phaselimiter/phaselimiter-gui.exe --check-no-vc-runtime
       - uses: actions/upload-artifact@v4
         with:
-          name: phaselimiter-gui-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/phaselimiter-gui
-            target/${{ matrix.target }}/release/phaselimiter-gui.exe
-            dist/${{ matrix.target }}/Phaselimiter-macos.zip
-            dist/${{ matrix.target }}/Phaselimiter-windows-x86_64.zip
+          name: phaselimiter-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/Phaselimiter-${{ matrix.target }}.*
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: phaselimiter-corresponding-sources
+          path: dist/${{ matrix.target }}/Phaselimiter-sources.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-results-${{ matrix.target }}
+          path: |
+            build/audio/build/backend/Testing/
+            build/audio/stage/BUILD-INFO.json
+            build/audio/stage/runtime-dependencies.json
+            build/audio/stage/runtime-versions.txt
+          if-no-files-found: ignore

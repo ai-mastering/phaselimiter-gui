@@ -1,6 +1,6 @@
 # phaselimiter-gui
 
-A portable desktop frontend for [phaselimiter](https://github.com/ai-mastering/phaselimiter/tree/feature/codex), the audio mastering engine used by bakuage.com / aimastering.com.
+A portable desktop frontend for [phaselimiter](https://github.com/ai-mastering/phaselimiter/tree/feature/win_build), the audio mastering engine used by bakuage.com / aimastering.com.
 
 The GUI uses Rust, iced 0.14 and the tiny-skia CPU renderer. It does not require GTK, Qt, a WebView or a GPU rendering API. Linux still uses X11/Wayland libraries. Audio processing runs locally in a separate backend process.
 
@@ -30,7 +30,7 @@ The devcontainer installs these, Rust, and the macOS cross-build tools. They are
 
 Settings are captured when a file is added. Change settings before adding files, or remove and re-add a queued file. The GUI chooses unused `_output` filenames and refuses an existing output at processing start. Failed and cancelled jobs retain their logs; add their input again to retry. Settings are currently kept only for the lifetime of the window.
 
-The GUI opens without an engine installed. To process audio, supply the `feature/codex` backend, FFmpeg and `sound_quality2_cache`. Edit their paths under **Engine & resources**. FFmpeg accepts a full path or a name on PATH. Paths are passed directly as process arguments; do not add shell quotes.
+The CI distribution includes the backend, FFmpeg and a sound-quality cache. The GUI also opens without an engine installed when built with Cargo alone. Edit paths under **Engine & resources** to use external tools. FFmpeg accepts a full path or a name on PATH. Paths are passed directly as process arguments; do not add shell quotes.
 
 The GUI supports target loudness, independent stereo matching, mastering intensity, bass preservation, pre-compression, true-peak ceiling, WAV/MP3/AAC, output sample rate, 16/24/32-bit WAV, DE-PRMM/CMA-ES, seed, evaluation budget and worker count. CMA-ES and the seed argument require the updated backend branch. It does not yet expose every backend option.
 
@@ -44,11 +44,11 @@ phaselimiter/
   resource/sound_quality2_cache
 ```
 
-The backend's dynamic libraries and any codec dependencies must also be packaged. Building this repository builds the GUI only, not the DSP backend. The backend has its own CPU and platform requirements.
+`cargo build` builds the GUI only. The CI builds the complete layout, including backend libraries and licenses. The x86-64 backend requires AVX (Sandy Bridge or newer); Apple Silicon uses NEON and the system Accelerate framework.
 
 ## Windows x86-64
 
-The GUI statically links the MSVC C runtime (`crt-static` in `.cargo/config.toml`). Its aim is to run on Windows 10/11 without a separate Visual C++ Redistributable installation. This does not cover the separately distributed DSP backend.
+The GUI statically links the MSVC C runtime (`crt-static` in `.cargo/config.toml`). The CI builds the backend and its libraries with the static CRT too, and rejects unexpected Visual C++ runtime DLL imports. The complete distribution targets Windows 10 1903 or later, uses UTF-8 backend manifests, and includes required oneTBB/OpenMP DLLs. No separate Visual C++ Redistributable is intended to be necessary.
 
 From the Linux devcontainer:
 
@@ -105,7 +105,7 @@ export SDKROOT=/tmp/phaselimiter-official-sdk/MacOSX.sdk
 bash script/build-macos.sh
 ```
 
-Keep the extracted SDK outside the repository. `.local-sdk/`, `target/` and `dist/` are ignored by Git. A local cross-build cannot verify macOS windowing behavior; run the result on your Mac. Future Apple Silicon GUI builds can use `MACOS_TARGET=aarch64-apple-darwin`; the DSP backend needs separate ARM support.
+Keep the extracted SDK outside the repository. `.local-sdk/`, `target/` and `dist/` are ignored by Git. A local cross-build cannot verify macOS windowing behavior; run the result on your Mac. Apple Silicon GUI builds can use `MACOS_TARGET=aarch64-apple-darwin`. The complete CI distribution builds and tests the ARM backend natively.
 
 ## Tests and CI
 
@@ -126,7 +126,20 @@ xvfb-run -a python3 script/test-x11-drop.py target/release/phaselimiter-gui
 
 This test drops a filename containing Japanese characters and spaces through XDND and checks that it reaches the queue. It does not simulate the drop by directly calling application code. Wayland D&D, IME, and Finder/Explorer D&D still need their own platform tests.
 
-GitHub Actions builds and tests on Linux, Windows and Intel macOS. The Mac job uses the runner's installed Xcode/official SDK in place and uploads the GUI application, not the SDK. The build artifacts currently contain the GUI only; they are not complete audio-processing distributions.
+GitHub Actions builds complete distributions on four native runners:
+
+| Target | Runner / baseline | Archive |
+| --- | --- | --- |
+| Linux x86-64 | Ubuntu 22.04; actual glibc requirements in `runtime-versions.txt` | `.tar.gz` |
+| Windows x86-64 | Windows 2022; Windows 10 1903+ target | `.zip` |
+| Intel macOS | macOS 15 Intel; macOS 14+ target | `.app` in `.zip` |
+| Apple Silicon macOS | macOS 15 ARM64; macOS 14+ target | `.app` in `.zip` |
+
+Each archive contains the GUI, self-built LGPL FFmpeg (including LAME), all eight backend tools, a cache generated by that target's analyzer, runtime libraries and license notices. Linux bundles oneTBB, OpenMP, libstdc++ and libgcc_s; glibc and desktop X11/Wayland libraries come from the OS. Mac bundles oneTBB/OpenMP and uses the system C++ runtime. Mac builds use the runner's official Xcode SDK in place. Apps use an ad-hoc signature for relocated executable code, without a signing certificate or notarization. No SDK is published.
+
+The workflow runs GUI tests, real Linux XDND, the backend's CTest suite, and tests the extracted archive in a relocated Japanese/emoji path with development runtime search paths removed. Acceptance tests cover codecs, resampling, spectrum PNG output and short DE/CMA-ES mastering jobs. The upstream auxiliary visualizer test alone uses a separate OS-installed test FFmpeg because it requires GPL libx264; this test tool is not packaged. Audio and distribution tests use our LGPL build. Windows also checks UTF-8 manifests and WAV/MP3/AAC processing with Unicode paths. Finder/Explorer and Wayland D&D are not automated by this workflow.
+
+Source downloads are SHA-256 checked. The backend revision and source versions are fixed in [packaging/audio-sources.json](packaging/audio-sources.json); updating the branch alone does not change the packaged backend. A separate `phaselimiter-corresponding-sources` artifact contains the backend/submodule source snapshot, dependency source archives, GUI source and build scripts. Keep this source artifact with binary releases; see [packaging/README.md](packaging/README.md) for native reproduction commands and release contents. GitHub Actions artifacts are built on pushes, pull requests and manual runs; this workflow does not publish releases.
 
 ## License
 

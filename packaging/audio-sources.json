@@ -1,0 +1,64 @@
+{
+  "backend": {
+    "repository": "ai-mastering/phaselimiter",
+    "revision": "6dd5105d7d9a7072fd3a374087ade0326786139d",
+    "branch": "feature/win_build"
+  },
+  "sources": {
+    "boost": {
+      "filename": "boost_1_82_0.tar.bz2",
+      "url": "https://archives.boost.io/release/1.82.0/source/boost_1_82_0.tar.bz2",
+      "sha256": "a6e1ab9b0860e6a2881dd7b21fe9f737a095e5f33a3a874afc6a345228597ee6"
+    },
+    "sndfile": {
+      "filename": "libsndfile-1.2.2.tar.gz",
+      "url": "https://github.com/libsndfile/libsndfile/archive/refs/tags/1.2.2.tar.gz",
+      "sha256": "ffe12ef8add3eaca876f04087734e6e8e029350082f3251f565fa9da55b52121"
+    },
+    "png": {
+      "filename": "libpng-1.6.43.tar.gz",
+      "url": "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.43.tar.gz",
+      "sha256": "fecc95b46cf05e8e3fc8a414750e0ba5aad00d89e9fdf175e94ff041caf1a03a"
+    },
+    "jpeg": {
+      "filename": "libjpeg-turbo-3.0.3.tar.gz",
+      "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/3.0.3.tar.gz",
+      "sha256": "a649205a90e39a548863a3614a9576a3fb4465f8e8e66d54999f127957c25b21"
+    },
+    "openmp": {
+      "filename": "openmp-19.1.7.src.tar.xz",
+      "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/openmp-19.1.7.src.tar.xz",
+      "sha256": "bd7e6901ab086fd268750363017935fd4a717c153dad3c2aab86cb0140d9e3fe"
+    },
+    "llvm-cmake": {
+      "filename": "cmake-19.1.7.src.tar.xz",
+      "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/cmake-19.1.7.src.tar.xz",
+      "sha256": "11c5a28f90053b0c43d0dec3d0ad579347fc277199c005206b963c19aae514e3"
+    },
+    "ffmpeg": {
+      "filename": "ffmpeg-9.0.2.tar.xz",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
+    },
+    "lame": {
+      "filename": "lame-3.100.tar.gz",
+      "url": "https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz",
+      "sha256": "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
+    },
+    "zlib": {
+      "filename": "zlib-1.3.1.tar.gz",
+      "url": "https://zlib.net/fossils/zlib-1.3.1.tar.gz",
+      "sha256": "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+    },
+    "tbb": {
+      "filename": "oneTBB-2023.1.0.tar.gz",
+      "url": "https://github.com/uxlfoundation/oneTBB/archive/refs/tags/v2023.1.0.tar.gz",
+      "sha256": "191288b52e1e6b17198000b64d77d194bb65e791be46ebc606e9b091781e2070"
+    },
+    "armadillo": {
+      "filename": "libarmadillo-dev_10.1.2+dfsg-6+b1_amd64.deb",
+      "url": "https://deb.debian.org/debian/pool/main/a/armadillo/libarmadillo-dev_10.1.2+dfsg-6+b1_amd64.deb",
+      "sha256": "1368245bcabcc26991d0e1281bd1070a46599703bcd720fbcfc39df9216b5c97"
+    }
+  }
+}

@@ -32,6 +32,7 @@ go.work
 # Rust build products, portable bundles and local Apple SDKs
 /target/
 /dist/
+/build/
 /.local-sdk/
 __pycache__/
 
