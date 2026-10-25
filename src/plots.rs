@@ -97,35 +97,31 @@ impl canvas::Program<Message> for Plot {
         _: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut cached = state.cached.borrow_mut();
-        let entry = if let Some(index) = cached.iter().position(|entry| entry.matches(self)) {
-            cached.remove(index).unwrap()
-        } else {
-            CachedPlot {
+        let entry = cached
+            .iter()
+            .position(|entry| entry.matches(self))
+            .and_then(|index| cached.remove(index))
+            .unwrap_or_else(|| CachedPlot {
                 input: self.input.clone(),
                 output: self.output.clone(),
                 waveform: self.waveform,
                 logarithmic: self.logarithmic,
                 geometry: canvas::Cache::new(),
-            }
-        };
+            });
+        let base = entry.geometry.draw(renderer, bounds.size(), |frame| {
+            #[cfg(test)]
+            state.builds.set(state.builds.get() + 1);
+            frame.fill_rectangle(
+                Point::ORIGIN,
+                bounds.size(),
+                Color::from_rgb8(245, 247, 250),
+            );
+            self.draw_static(frame, bounds);
+        });
         cached.push_back(entry);
         if cached.len() > 8 {
             cached.pop_front();
         }
-        let base = cached
-            .back()
-            .unwrap()
-            .geometry
-            .draw(renderer, bounds.size(), |frame| {
-                #[cfg(test)]
-                state.builds.set(state.builds.get() + 1);
-                frame.fill_rectangle(
-                    Point::ORIGIN,
-                    bounds.size(),
-                    Color::from_rgb8(245, 247, 250),
-                );
-                self.draw_static(frame, bounds);
-            });
         let mut layers = vec![base];
         if self.waveform {
             let mut overlay = Frame::new(renderer, bounds.size());

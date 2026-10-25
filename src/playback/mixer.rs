@@ -32,6 +32,15 @@ pub(super) struct Shared {
     pub underruns: AtomicU64,
     error: Mutex<Option<String>>,
 }
+impl Shared {
+    fn fail(&self, error: String) {
+        self.playing.store(false, Ordering::Release);
+        *self
+            .error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
+    }
+}
 pub(super) enum Command {
     Load(Arc<Decoded>, f32),
     Warm(Arc<Decoded>),
@@ -74,11 +83,11 @@ impl Mixer {
             clock: 0,
         }
     }
-    fn source(&mut self, audio: Arc<Decoded>) -> usize {
+    fn source(&mut self, audio: Arc<Decoded>) -> Result<usize, String> {
         self.clock += 1;
         if let Some(i) = self.sources.iter().position(|s| s.audio.path == audio.path) {
             self.sources[i].used = self.clock;
-            return i;
+            return Ok(i);
         }
         if self.sources.len() >= CACHE
             && let Some(i) = self
@@ -95,7 +104,7 @@ impl Mixer {
         {
             self.sources.remove(i);
         }
-        let reader = Reader::new(audio.clone(), self.position, self.region);
+        let reader = Reader::new(audio.clone(), self.position, self.region)?;
         self.sources.push(Source {
             audio,
             reader,
@@ -105,7 +114,7 @@ impl Mixer {
             from: 0.,
             used: self.clock,
         });
-        self.sources.len() - 1
+        Ok(self.sources.len() - 1)
     }
     fn invalidate(&mut self, position: u64) {
         self.position = position;
@@ -118,7 +127,13 @@ impl Mixer {
                 if !self.shared.playing.load(Ordering::Acquire) {
                     self.invalidate(self.shared.position.load(Ordering::Acquire));
                 }
-                let i = self.source(audio);
+                let i = match self.source(audio) {
+                    Ok(i) => i,
+                    Err(error) => {
+                        self.shared.fail(error);
+                        return;
+                    }
+                };
                 if self.sources[i].weight == 0. {
                     self.sources[i].gain = gain;
                 }
@@ -126,7 +141,9 @@ impl Mixer {
                 self.pending = Some(self.sources[i].audio.path.clone());
             }
             Command::Warm(audio) => {
-                self.source(audio);
+                if let Err(error) = self.source(audio) {
+                    self.shared.fail(error);
+                }
             }
             Command::Gain(gain) => {
                 let target = self.pending.as_ref().or(self.active.as_ref());
@@ -321,24 +338,37 @@ impl Default for Engine {
         let thread = thread::Builder::new()
             .name("audio-mixer".into())
             .spawn(move || run(s, producer, receiver))
-            .expect("create audio mixer");
+            .map_err(|error| shared.fail(format!("Starting audio mixer: {error}")))
+            .ok();
         Self {
             shared,
             output: Some(consumer),
             sender,
-            thread: Some(thread),
+            thread,
         }
     }
 }
 impl Engine {
+    pub fn ready(&self) -> Result<(), String> {
+        match &self.thread {
+            Some(thread) if !thread.is_finished() => Ok(()),
+            _ => Err("Audio mixer is unavailable.".into()),
+        }
+    }
     pub fn send(&self, command: Command) {
-        let _ = self.sender.send(command);
+        if self.sender.send(command).is_err() {
+            self.shared.fail("Audio mixer is unavailable.".into());
+        }
         if let Some(thread) = &self.thread {
             thread.thread().unpark();
         }
     }
     pub fn error(&self) -> Option<String> {
-        self.shared.error.lock().unwrap().take()
+        self.shared
+            .error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 }
 impl Drop for Engine {
@@ -359,7 +389,7 @@ fn run(shared: Arc<Shared>, mut output: Producer<Frame>, commands: mpsc::Receive
             mixer.command(command);
         }
         if let Some(error) = mixer.error() {
-            *shared.error.lock().unwrap() = Some(error);
+            shared.fail(error);
         }
         mixer.activate();
         if shared.playing.load(Ordering::Acquire) {

@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod analysis;
 mod backend;
@@ -444,6 +446,9 @@ impl App {
         if self.analyzing.is_some() || self.closing {
             return Task::none();
         }
+        let Some(root) = self.root.clone() else {
+            return Task::none();
+        };
         while let Some(key) = self.analysis_queue.pop_front() {
             let Some((input, hash)) = self.audio(key) else {
                 continue;
@@ -452,9 +457,7 @@ impl App {
             let settings = self.draft.clone();
             return Task::perform(
                 analysis::run(
-                    self.root
-                        .clone()
-                        .expect("Library available during analysis"),
+                    root,
                     input,
                     hash,
                     PathBuf::from(settings.backend),
@@ -1054,16 +1057,13 @@ impl App {
             self.library
                 .tracks
                 .iter()
-                .filter(|t| t.analysis.is_some())
-                .map(|t| ReferenceChoice {
-                    path: t
-                        .analysis
-                        .as_ref()
-                        .and_then(|a| a.path())
-                        .unwrap()
-                        .display()
-                        .to_string(),
-                    label: format!("Reference: {} · #{}", t.name, t.id),
+                .filter(|t| t.analysis_error.is_none())
+                .filter_map(|t| {
+                    let analysis = t.analysis.as_ref().filter(|a| a.available())?;
+                    Some(ReferenceChoice {
+                        path: analysis.path()?.display().to_string(),
+                        label: format!("Reference: {} · #{}", t.name, t.id),
+                    })
                 }),
         );
         if !self.draft.reference.is_empty()

@@ -157,7 +157,13 @@ impl Library {
                     *analysis = Analysis::store(root, &fs::read(&old).map_err(|e| e.to_string())?)?;
                 }
                 analysis.persist(root)?;
-                paths.insert(old, analysis.path().unwrap().to_path_buf());
+                paths.insert(
+                    old,
+                    analysis
+                        .path()
+                        .ok_or("Analysis was not persisted")?
+                        .to_path_buf(),
+                );
             }
         }
         for job in &mut self.jobs {
@@ -172,7 +178,7 @@ impl Library {
                     }
                     Analysis::store(root, &fs::read(old).map_err(|e| e.to_string())?)?
                         .path()
-                        .unwrap()
+                        .ok_or("Reference was not persisted")?
                         .to_path_buf()
                 };
                 paths.insert(old.clone(), path.clone());
@@ -198,6 +204,27 @@ impl Library {
         let mut library: Self =
             serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
                 .map_err(|e| format!("Cannot read saved library: {e}"))?;
+        for (analysis, error) in library
+            .tracks
+            .iter_mut()
+            .map(|t| (&mut t.analysis, &mut t.analysis_error))
+            .chain(
+                library
+                    .jobs
+                    .iter_mut()
+                    .map(|j| (&mut j.analysis, &mut j.analysis_error)),
+            )
+        {
+            if let Some(analysis) = analysis {
+                if let Err(reason) = analysis.load_report() {
+                    *error = Some(format!(
+                        "Analysis unavailable: {reason}. Analyze this audio again."
+                    ));
+                } else {
+                    *error = None;
+                }
+            }
+        }
         for job in &mut library.jobs {
             if job.status == Status::Processing {
                 job.status = Status::Interrupted;
@@ -422,7 +449,78 @@ mod tests {
             Some(artifact.as_path())
         );
         fs::write(&artifact, b"{}").unwrap();
-        assert!(Library::load(dir.path()).is_err());
+        let damaged = Library::load(dir.path()).unwrap();
+        assert!(
+            damaged.tracks[0]
+                .analysis_error
+                .as_ref()
+                .unwrap()
+                .contains("Analysis unavailable")
+        );
+        damaged.save(dir.path()).unwrap();
+        assert_eq!(
+            Library::load(dir.path()).unwrap().tracks[0]
+                .analysis
+                .as_ref()
+                .unwrap()
+                .path(),
+            Some(artifact.as_path())
+        );
+    }
+
+    #[test]
+    fn missing_report_is_local_to_its_audio_and_keeps_historical_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("mix.wav");
+        fs::write(&source, b"audio").unwrap();
+        let mut state = Library::default();
+        for id in 0..2 {
+            let mut track = import(dir.path(), source.clone(), id).unwrap();
+            track.analysis = Some(
+                Analysis::store(
+                    dir.path(),
+                    &serde_json::to_vec(&serde_json::json!({"loudness": -10.0-id as f64})).unwrap(),
+                )
+                .unwrap(),
+            );
+            state.tracks.push(track);
+        }
+        let path = state.tracks[0]
+            .analysis
+            .as_ref()
+            .unwrap()
+            .path()
+            .unwrap()
+            .to_path_buf();
+        let mut config = state.settings.parse().unwrap();
+        config.reference = Some(path.clone());
+        let mut job = crate::model::test_job(
+            state.tracks[1].input.clone(),
+            dir.path().join("output.wav"),
+            config,
+            2,
+        );
+        job.reference_hash = Some(hash(&path).unwrap());
+        state.jobs.push(job);
+        state.save(dir.path()).unwrap();
+        fs::remove_file(&path).unwrap();
+        let loaded = Library::load(dir.path()).unwrap();
+        assert!(loaded.tracks[0].analysis_error.is_some());
+        assert!(!loaded.tracks[0].analysis.as_ref().unwrap().available());
+        assert!(loaded.tracks[1].analysis_error.is_none());
+        assert_eq!(
+            loaded.tracks[1]
+                .analysis
+                .as_ref()
+                .unwrap()
+                .number("loudness"),
+            Some(-11.)
+        );
+        verify(&loaded.tracks[0].input, &loaded.tracks[0].hash).unwrap();
+        loaded.save(dir.path()).unwrap();
+        let restored = Library::load(dir.path()).unwrap();
+        assert_eq!(restored.jobs[0].config.reference.as_ref(), Some(&path));
+        assert!(restored.tracks[0].analysis_error.is_some());
     }
 
     #[test]

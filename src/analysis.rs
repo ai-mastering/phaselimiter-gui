@@ -50,16 +50,21 @@ impl Analysis {
             .map(|b| format!("{b:02x}"))
             .collect();
         let path = directory.join(format!("{digest}.json"));
-        if path.exists() {
-            crate::library::verify(&path, &digest)?;
-        } else {
+        let exists = path.exists();
+        if !exists || crate::library::verify(&path, &digest).is_err() {
             let mut temporary =
                 tempfile::NamedTempFile::new_in(&directory).map_err(|e| e.to_string())?;
             temporary.write_all(bytes).map_err(|e| e.to_string())?;
             temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-            temporary
-                .persist_noclobber(&path)
-                .map_err(|e| e.to_string())?;
+            if exists {
+                // Repair only with bytes matching the original content ID.
+                // Valid immutable reports are never rewritten.
+                temporary.persist(&path).map_err(|e| e.to_string())?;
+            } else {
+                temporary
+                    .persist_noclobber(&path)
+                    .map_err(|e| e.to_string())?;
+            }
         }
         let mut result = Self::new(value);
         result.artifact = Some(path);
@@ -75,6 +80,31 @@ impl Analysis {
         }
         Ok(())
     }
+    pub fn available(&self) -> bool {
+        self.raw.is_object()
+    }
+
+    // Resolve file contents explicitly at the library boundary, not in serde.
+    // A failed report keeps its reference so saving cannot erase recovery data.
+    pub fn load_report(&mut self) -> Result<(), String> {
+        let Some(path) = &self.artifact else {
+            return Ok(());
+        };
+        let expected = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or("Invalid analysis path")?;
+        crate::library::verify(path, expected)?;
+        let raw: Value = serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        if !raw.is_object() {
+            return Err("Analysis report is not an object.".into());
+        }
+        self.raw = Arc::new(raw);
+        self.plots = Arc::default();
+        Ok(())
+    }
+
     fn points(&self, name: &str, x: &str, y: &str) -> Series {
         self.raw
             .get(name)
@@ -155,14 +185,7 @@ impl<'de> Deserialize<'de> for Analysis {
         let value = Value::deserialize(deserializer)?;
         if let Some(path) = value.get("analysis_file").and_then(Value::as_str) {
             let path = PathBuf::from(path);
-            let expected = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| serde::de::Error::custom("Invalid analysis path"))?;
-            crate::library::verify(&path, expected).map_err(serde::de::Error::custom)?;
-            let bytes = std::fs::read(&path).map_err(serde::de::Error::custom)?;
-            let raw = serde_json::from_slice(&bytes).map_err(serde::de::Error::custom)?;
-            let mut result = Self::new(raw);
+            let mut result = Self::new(Value::Null);
             result.artifact = Some(path);
             Ok(result)
         } else {
@@ -274,6 +297,21 @@ mod tests {
         let restored: Analysis = serde_json::from_value(raw).unwrap();
         assert_eq!(restored.waveform().len(), 2);
     }
+    #[test]
+    fn regeneration_repairs_only_the_exact_content_addressed_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = br#"{"loudness":-10}"#;
+        let original = Analysis::store(dir.path(), bytes).unwrap();
+        let path = original.path().unwrap();
+        std::fs::write(path, b"damaged").unwrap();
+        let replacement = Analysis::store(dir.path(), br#"{"loudness":-11}"#).unwrap();
+        assert_ne!(replacement.path(), Some(path));
+        assert_eq!(std::fs::read(path).unwrap(), b"damaged");
+        let repaired = Analysis::store(dir.path(), bytes).unwrap();
+        assert_eq!(repaired.path(), Some(path));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
     #[test]
     fn reads_comparison_series_and_ignores_missing_metrics() {
         let analysis = Analysis::new(

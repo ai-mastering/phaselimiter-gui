@@ -1,5 +1,4 @@
 //! FFmpeg decodes into bounded-memory, disposable PCM files; miniaudio plays them.
-use miniaudio::{Device, DeviceConfig, DeviceType, Format};
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::Ordering},
@@ -78,7 +77,7 @@ mod reader;
 #[derive(Default)]
 pub struct Player {
     engine: mixer::Engine,
-    device: Option<Device>,
+    device: Option<native::PlaybackDevice>,
 }
 // Keep diagnostics off the audio callback. These entries also survive a native crash.
 pub fn log(message: &str) {
@@ -105,25 +104,7 @@ pub fn log(message: &str) {
     let _ = message;
 }
 
-fn open_device(
-    config: &DeviceConfig,
-    backend: Option<miniaudio::Backend>,
-) -> Result<Device, String> {
-    // With a supplied context, ma_device_init always clears the device before
-    // returning an error. ma_device_init_ex (the implicit-context path) can fail
-    // before touching it, but the Rust wrapper reads pUserData even on failure.
-    let context = if let Some(backend) = backend {
-        log("Initializing audio context");
-        Some(
-            miniaudio::Context::new(&[backend], None)
-                .map_err(|e| format!("Audio backend initialization: {e}"))?,
-        )
-    } else {
-        None
-    };
-    log("Initializing playback device");
-    Device::new(context, config).map_err(|e| format!("Audio device: {e}"))
-}
+mod native;
 
 impl Player {
     pub fn load(&mut self, audio: Arc<Decoded>, gain: f32) -> Result<(), String> {
@@ -134,38 +115,18 @@ impl Player {
         self.engine.send(mixer::Command::Warm(audio));
     }
     pub fn play(&mut self) -> Result<(), String> {
+        self.engine.ready()?;
         if self.device.is_none() {
-            log("Play requested: configuring F32 stereo at 44100 Hz");
-            let mut config = DeviceConfig::new(DeviceType::Playback);
-            config.playback_mut().set_format(Format::F32);
-            config.playback_mut().set_channels(2);
-            config.set_sample_rate(RATE as u32);
-            #[cfg(target_os = "macos")]
-            let backend = Some(miniaudio::Backend::CoreAudio);
-            #[cfg(not(target_os = "macos"))]
-            let backend = None;
-            let mut device = open_device(&config, backend).inspect_err(|error| log(error))?;
-            let mut queue = self
-                .engine
-                .output
-                .take()
-                .ok_or("Playback queue unavailable.")?;
-            let shared = self.engine.shared.clone();
-            device.set_data_callback(move |_, output, _| {
-                mixer::consume(output.as_samples_mut::<f32>(), &mut queue, &shared)
-            });
-            // Keep the callback and queue on start failure, so Play can retry.
+            let device =
+                native::PlaybackDevice::open(&mut self.engine.output, self.engine.shared.clone())
+                    .inspect_err(|error| log(error))?;
+            // Retain the device/queue on start failure so Play can retry.
             self.device = Some(device);
         }
-        if let Some(device) = &self.device
-            && !device.is_started()
-        {
-            log("Starting playback device");
-            device
-                .start()
-                .map_err(|e| format!("Starting audio: {e}"))
-                .inspect_err(|error| log(error))?;
+        if let Some(device) = &self.device {
+            device.start().inspect_err(|error| log(error))?;
         }
+
         let (position, duration, _) = self.status();
         if duration > 0. && position >= duration {
             self.seek(0.);
@@ -260,12 +221,5 @@ mod tests {
         assert!(player.take_error().is_none());
         player.pause();
         assert!(!player.status().2);
-    }
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn unavailable_backend_returns_an_error_before_device_allocation() {
-        let config = DeviceConfig::new(DeviceType::Playback);
-        let result = open_device(&config, Some(miniaudio::Backend::CoreAudio));
-        assert!(matches!(result,Err(error) if error.starts_with("Audio backend initialization:")));
     }
 }

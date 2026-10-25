@@ -36,7 +36,11 @@ pub(super) struct Reader {
     errors: mpsc::Receiver<String>,
 }
 impl Reader {
-    pub fn new(audio: Arc<Decoded>, position: u64, region: Option<(u64, u64)>) -> Self {
+    pub fn new(
+        audio: Arc<Decoded>,
+        position: u64,
+        region: Option<(u64, u64)>,
+    ) -> Result<Self, String> {
         let frames = audio.frames;
         let region = region
             .filter(|&(a, b)| a < frames && b.min(frames) > a)
@@ -95,8 +99,8 @@ impl Reader {
                             bytes[..count * 8].as_chunks::<8>().0.iter().enumerate()
                         {
                             let samples = [
-                                f32::from_le_bytes(bytes[..4].try_into().unwrap()),
-                                f32::from_le_bytes(bytes[4..].try_into().unwrap()),
+                                f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+                                f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
                             ];
                             // Capacity cannot decrease: this thread is the only producer.
                             if producer
@@ -118,8 +122,8 @@ impl Reader {
                     let _ = errors_tx.send(error);
                 }
             })
-            .expect("create audio file reader");
-        Self {
+            .map_err(|e| format!("Starting audio reader: {e}"))?;
+        Ok(Self {
             samples,
             control,
             thread,
@@ -127,7 +131,7 @@ impl Reader {
             frames,
             frame: None,
             errors,
-        }
+        })
     }
     pub fn seek(&mut self, position: u64) {
         self.control.position.store(position, Ordering::Relaxed);

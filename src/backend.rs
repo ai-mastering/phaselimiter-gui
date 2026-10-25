@@ -77,21 +77,10 @@ pub fn progress(line: &str) -> Option<f32> {
     value.is_finite().then(|| value.clamp(0.0, 1.0))
 }
 
-// A separate process group also stops FFmpeg children on Unix when a task is
-// cancelled or the window closes. Child::kill_on_drop handles the direct child
-// on every platform.
-struct ProcessGroup(Option<u32>);
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.0.take() {
-            // SAFETY: this is the dedicated process group created for our child.
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
-    }
-}
+// Unix process-group signaling is the only unsafe operation in this crate.
+#[allow(unsafe_code)]
+mod process_group;
+use process_group::ProcessGroup;
 
 pub fn run(job: Job, cancel: Arc<AtomicBool>) -> impl Stream<Item = Update> {
     iced::stream::channel(100, async move |mut sender| {
@@ -157,8 +146,11 @@ async fn execute(
         }
     };
     let mut group = ProcessGroup(child.id());
-    let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
-    let mut stderr = BufReader::new(child.stderr.take().expect("piped stderr")).lines();
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        return Update::Finished(Err("Backend output pipes unavailable.".into()));
+    };
+    let mut stdout = BufReader::new(stdout).lines();
+    let mut stderr = BufReader::new(stderr).lines();
     let (mut stdout_done, mut stderr_done) = (false, false);
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
     while !stdout_done || !stderr_done {
