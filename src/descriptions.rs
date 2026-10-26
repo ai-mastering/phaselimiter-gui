@@ -174,13 +174,13 @@ impl App {
                     "Analyzes the selected audio and passes its feature JSON to mastering5. The optimizer minimizes feature distance to that reference. Without a reference it optimizes the cached sound-quality model instead. This is separate from the loudness target."
                 }
                 Field::Backend => {
-                    "Executable used for mastering. A blank override resolves to the bundled phase_limiter. A non-empty path is used as entered, without shell parsing."
+                    "Executable used for mastering. A blank override resolves to the bundled phase_limiter. Otherwise use an absolute path, without shell quotes."
                 }
                 Field::Ffmpeg => {
-                    "FFmpeg used for audio decoding and encoding. Blank selects the bundled executable. Otherwise use an executable path or a name on PATH, without shell quotes."
+                    "FFmpeg used for audio decoding and encoding. Blank selects the bundled executable. Otherwise use an absolute executable path, without shell quotes."
                 }
                 Field::Cache => {
-                    "Sound-quality model cache loaded by mastering5, including when a reference is selected. Blank resolves to the bundled cache; a non-empty path overrides it."
+                    "Sound-quality model cache loaded by mastering5, including when a reference is selected. Blank resolves to the bundled cache; an absolute path overrides it."
                 }
                 Field::ExportDir => {
                     "Suggests the destination directory when exporting a copy. It does not change the stored mastering output or get recalled from historical runs."

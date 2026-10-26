@@ -589,15 +589,22 @@ impl App {
                 detail = detail.push(self.error_view(format!("{label} Professionality: {error}")));
             }
         }
-        for (key, error) in [
-            ((track.id, None), track.analysis_error.as_ref()),
-            (
-                (track.id, job.map(|j| j.id)),
-                job.and_then(|j| j.analysis_error.as_ref()),
-            ),
-        ]
-        .into_iter()
-        .take(if job.is_some() { 2 } else { 1 })
+        for (label, key, error) in
+            std::iter::once(("Original", (track.id, None), track.analysis_error.as_ref()))
+                .chain(baseline.map(|j| {
+                    (
+                        "Compare A",
+                        (track.id, Some(j.id)),
+                        j.analysis_error.as_ref(),
+                    )
+                }))
+                .chain(job.map(|j| {
+                    (
+                        "Selected",
+                        (track.id, Some(j.id)),
+                        j.analysis_error.as_ref(),
+                    )
+                }))
         {
             if self.analyzing == Some(key) {
                 detail = detail.push(
@@ -607,14 +614,7 @@ impl App {
                 );
             }
             if let Some(error) = error {
-                detail = detail.push(self.error_view(format!(
-                    "{} analysis: {error}",
-                    if key.1.is_some() {
-                        "Selected"
-                    } else {
-                        "Original"
-                    }
-                )));
+                detail = detail.push(self.error_view(format!("{label} analysis: {error}")));
             }
         }
         if has_reference {
@@ -1145,7 +1145,7 @@ impl App {
     fn app_settings_view(&self) -> Element<'_, Message> {
         column![
             text("Engine & resources").size(14).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            text("Blank: bundled with this app. Non-empty: use the specified path.").size(12).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            text("Blank: bundled with this app. Otherwise, enter an absolute path.").size(12).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             button("Clear paths / use bundled tools").on_press(Message::UseBundledTools).style(theme::normal),
             self.path_setting(
                 "phase_limiter executable",
@@ -1153,7 +1153,7 @@ impl App {
                 Field::Backend
             ),
             self.path_setting(
-                "FFmpeg executable / PATH name",
+                "FFmpeg executable (absolute path)",
                 &self.library.app_settings.ffmpeg,
                 Field::Ffmpeg
             ),

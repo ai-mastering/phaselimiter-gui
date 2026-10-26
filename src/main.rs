@@ -1562,6 +1562,23 @@ mod tests {
     }
 
     #[test]
+    fn relative_tool_overrides_block_mastering_without_rewriting_saved_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.library.app_settings.ffmpeg = "ffmpeg".into();
+        assert!(
+            app.queue_master()
+                .unwrap_err()
+                .contains("FFmpeg: use an absolute path")
+        );
+        assert!(app.library.jobs.is_empty());
+        assert_eq!(app.library.app_settings.ffmpeg, "ffmpeg");
+        app.library.app_settings.ffmpeg.clear();
+        app.queue_master().unwrap();
+        assert!(PathBuf::from(&app.library.jobs[0].tools.ffmpeg).is_absolute());
+    }
+
+    #[test]
     fn disabled_mastering_ignores_pending_external_reference_and_preserves_uuid_jobs() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());

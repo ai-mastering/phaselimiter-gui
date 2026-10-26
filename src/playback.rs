@@ -19,6 +19,7 @@ pub async fn decode(
     expected: String,
     ffmpeg: String,
 ) -> Result<Arc<Decoded>, String> {
+    crate::model::validate_tool_path(std::path::Path::new(&ffmpeg), "FFmpeg")?;
     let checked = input.clone();
     tokio::task::spawn_blocking(move || crate::library::verify(&checked, &expected))
         .await
@@ -194,6 +195,14 @@ pub(crate) fn test_audio(samples: &[[f32; 2]], source: Option<&std::path::Path>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn rejects_command_names_and_relative_ffmpeg_paths_before_decoding() {
+        for ffmpeg in ["ffmpeg", "./ffmpeg"] {
+            let result = decode("unused.wav".into(), "unused hash".into(), ffmpeg.into()).await;
+            assert!(result.unwrap_err().contains("FFmpeg: use an absolute path"));
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "Run explicitly with an ALSA null-device configuration"]

@@ -291,6 +291,10 @@ pub async fn run_with_options(
     cache: PathBuf,
     options: Options,
 ) -> Result<Analysis, String> {
+    crate::model::validate_tool_path(&backend, "phase_limiter")?;
+    crate::model::validate_tool_path(Path::new(&ffmpeg), "FFmpeg")?;
+    crate::model::validate_tool_path(&cache, "Sound-quality cache")?;
+    let ffmpeg = PathBuf::from(ffmpeg);
     let checked = input.clone();
     let checked_hash = expected.clone();
     tokio::task::spawn_blocking(move || crate::library::verify(&checked, &checked_hash))
@@ -668,6 +672,31 @@ printf '{"loudness":-10,"sound_quality":0.11,"sound_quality2":0.88,"bands_short"
         )
         .await
         .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn analysis_rejects_path_names_before_starting_tools() {
+        let dir = analysis_fixture();
+        let input = dir.path().join("日本語 input.mp3");
+        for ffmpeg in ["ffmpeg", "./fake ffmpeg"] {
+            let result = run_with_options(
+                dir.path().to_path_buf(),
+                input.clone(),
+                library_hash(&input),
+                dir.path().join("engine 日本語/bin/phase_limiter"),
+                ffmpeg.into(),
+                dir.path().join("cache"),
+                Options::REFERENCE,
+            )
+            .await;
+            assert!(result.unwrap_err().contains("FFmpeg: use an absolute path"));
+        }
+        assert!(
+            !dir.path()
+                .join("engine 日本語/bin/audio_analyzer.calls")
+                .exists()
+        );
     }
 
     #[cfg(unix)]
