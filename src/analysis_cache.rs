@@ -61,11 +61,11 @@ pub fn entry(
     options: &analysis::Options,
 ) -> Result<PathBuf, String> {
     let mut recipe = json!({
-        "revision": 1,
+        "revision": 2,
         "input": input_hash,
         "analyzer": library::hash(&analysis::executable(backend))?,
         "ffmpeg": library::hash(&executable_path(ffmpeg)?)?,
-        "decode": ["-map", "0:a:0", "-vn", "-ac", "2", "-c:a", "pcm_f32le", "-f", "wav"],
+        "decode": [ "-vn", "-ac", "2", "-c:a", "pcm_f32le", "-f", "wav"],
         "analyze": {"drr":true,"sound_quality":false,"sound_quality2":options.sound_quality2,
                     "analysis_for_visualization":true},
         "detect2": options.detect2,

@@ -338,22 +338,13 @@ pub async fn run_with_options(
     }
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     // The analyzer accepts WAV/WAVEX, not arbitrary FFmpeg-supported inputs.
+    // Use FFmpeg's automatic stream selection, matching playback and mastering.
     let normalized = scratch.path().join("input.wav");
     let mut normalize = tokio::process::Command::new(&ffmpeg);
     normalize
         .args(["-nostdin", "-v", "error", "-i"])
         .arg(&input)
-        .args([
-            "-map",
-            "0:a:0",
-            "-vn",
-            "-ac",
-            "2",
-            "-c:a",
-            "pcm_f32le",
-            "-f",
-            "wav",
-        ])
+        .args(["-vn", "-ac", "2", "-c:a", "pcm_f32le", "-f", "wav"])
         .arg(&normalized)
         .kill_on_drop(true);
     #[cfg(windows)]
@@ -616,9 +607,10 @@ mod tests {
             b"fake compressed audio",
         )
         .unwrap();
+        // Explicit stream mapping would diverge from playback and mastering.
         write_executable(
             &dir.path().join("fake ffmpeg"),
-            "#!/bin/sh\nfor arg do dest=\"$arg\"; done\nprintf normalized > \"$dest\"\n",
+            "#!/bin/sh\nfor arg do\n case \"$arg\" in -map|-map=*) exit 8;; esac\n dest=\"$arg\"\ndone\nprintf normalized > \"$dest\"\n",
         );
         let engine = dir.path().join("engine 日本語");
         std::fs::create_dir_all(engine.join("bin")).unwrap();

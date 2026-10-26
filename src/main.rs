@@ -932,6 +932,10 @@ impl App {
                     self.error =
                         Some("Cancel the active mastering before removing this audio.".into());
                 } else {
+                    let previous_library = self.library.clone();
+                    let previous_selected = self.selected;
+                    let previous_comparison = self.comparison_job;
+                    let previous_memo_save_at = self.memo_save_at;
                     let removed_jobs: Vec<_> = self
                         .library
                         .jobs
@@ -949,7 +953,6 @@ impl App {
                         self.library.jobs.retain(|j| j.id != id);
                         if self.comparison_job == Some(id) {
                             self.comparison_job = None;
-                            tasks.push(self.prepare());
                         }
                     } else {
                         self.library.jobs.retain(|j| j.track_id != key.0);
@@ -960,14 +963,22 @@ impl App {
                         .is_some_and(|s| s == key || (key.1.is_none() && s.0 == key.0))
                     {
                         self.selected = None;
+                    }
+                    // Commit the manifest before changing playback or removing files.
+                    if !self.save_sync() {
+                        self.library = previous_library;
+                        self.selected = previous_selected;
+                        self.comparison_job = previous_comparison;
+                        self.memo_save_at = previous_memo_save_at;
+                        return Task::none();
+                    }
+                    if self.selected != previous_selected {
                         self.player.pause();
                         self.loaded = false;
                         self.active_key = None;
                         self.loading = false;
-                    }
-                    // Save the manifest before removing the owned files.
-                    if !self.save_sync() {
-                        return Task::none();
+                    } else if self.comparison_job != previous_comparison {
+                        tasks.push(self.prepare());
                     }
                     if let Some(root) = &self.root {
                         for id in removed_jobs {
@@ -1472,6 +1483,84 @@ mod tests {
         app.selected = Some((Uuid::from_u128(0), None));
         app
     }
+    #[test]
+    fn failed_removal_preserves_history_selection_and_playback_state() {
+        for background_save in [false, true] {
+            for remove in [None, Some(Uuid::from_u128(1)), Some(Uuid::from_u128(2))] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut app = app_with_track(dir.path());
+                let track_id = app.selected.unwrap().0;
+                let input = app.library.tracks[0].input.clone();
+                for id in [1, 2] {
+                    let mut job = model::test_job(
+                        input.clone(),
+                        dir.path().join(format!("result-{id}.wav")),
+                        app.library.draft.parse().unwrap(),
+                        id,
+                    );
+                    job.track_id = track_id;
+                    job.status = Status::Succeeded;
+                    std::fs::write(&job.output, b"result").unwrap();
+                    job.output_hash = Some(library::hash(&job.output).unwrap());
+                    app.library.jobs.push(job);
+                }
+                app.selected = Some((track_id, Some(Uuid::from_u128(1))));
+                app.comparison_job = Some(Uuid::from_u128(2));
+                app.loaded = true;
+                app.active_key = app.listening_key();
+                let active_key = app.active_key;
+                assert!(app.save_sync());
+                let manifest = std::fs::read(dir.path().join("library.json")).unwrap();
+                let blocked = dir.path().join("blocked");
+                std::fs::write(&blocked, b"not a directory").unwrap();
+                app.root = Some(blocked.clone());
+                if background_save {
+                    app.save_worker = Some(library::SaveWorker::new(blocked).unwrap());
+                }
+                let _ = app.update(Message::Remove((track_id, remove)));
+                assert!(
+                    app.error
+                        .as_ref()
+                        .unwrap()
+                        .contains("Could not save history")
+                );
+                assert_eq!(
+                    serde_json::to_value(&app.library).unwrap(),
+                    serde_json::from_slice::<serde_json::Value>(&manifest).unwrap()
+                );
+                assert_eq!(app.selected, Some((track_id, Some(Uuid::from_u128(1)))));
+                assert_eq!(app.comparison_job, Some(Uuid::from_u128(2)));
+                assert!(app.loaded);
+                assert_eq!(app.active_key, active_key);
+                assert!(input.is_file());
+                assert_eq!(
+                    std::fs::read(dir.path().join("library.json")).unwrap(),
+                    manifest
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn successful_removal_updates_manifest_and_removes_owned_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let key = app.selected.unwrap();
+        let input = app.library.tracks[0].input.clone();
+        app.loaded = true;
+        app.active_key = Some(key);
+        let _ = app.update(Message::Remove(key));
+        assert!(app.error.is_none());
+        assert!(app.library.tracks.is_empty());
+        assert!(app.selected.is_none());
+        assert!(!app.loaded);
+        assert!(app.active_key.is_none());
+        assert!(!input.exists());
+        let saved = Library::load(dir.path()).unwrap();
+        assert!(saved.tracks.is_empty());
+        assert!(saved.selected.is_none());
+    }
+
     #[test]
     fn disabled_mastering_ignores_pending_external_reference_and_preserves_uuid_jobs() {
         let dir = tempfile::tempdir().unwrap();
