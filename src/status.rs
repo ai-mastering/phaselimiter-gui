@@ -41,13 +41,13 @@ impl App {
             messages.push(format!("Cannot run mastering: {reason}"));
             is_error = true;
         } else if self.selected.is_none() {
-            messages.push("Select an input first.".into());
+            messages.push("Master new audio or select a result.".into());
         } else if self.root.is_none() {
             messages.push("Data directory unavailable.".into());
             is_error = true;
         }
         if self.hovering {
-            messages.push("Release to import audio.".into());
+            messages.push("Release to master audio with the current settings.".into());
         }
         if self.importing > 0 {
             messages.push(format!("Importing {}…", self.importing));

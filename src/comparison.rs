@@ -17,11 +17,10 @@ impl std::fmt::Display for ComparisonChoice {
 impl App {
     pub(super) fn comparison_job(&self) -> Option<&Job> {
         let (track, selected) = self.selected?;
-        selected?;
         self.library.jobs.iter().find(|j| {
             Some(j.id) == self.comparison_job
                 && j.track_id == track
-                && Some(j.id) != selected
+                && j.id != selected
                 && j.status == Status::Succeeded
         })
     }
@@ -36,9 +35,7 @@ impl App {
                     .jobs
                     .iter()
                     .filter(|j| {
-                        j.track_id == track
-                            && j.status == Status::Succeeded
-                            && Some(j.id) != selected
+                        j.track_id == track && j.status == Status::Succeeded && j.id != selected
                     })
                     .map(|j| ComparisonChoice {
                         job: Some(j.id),

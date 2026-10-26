@@ -54,11 +54,9 @@ impl App {
         Some((
             track,
             if self.output_side {
-                job
-            } else if job.is_some() {
-                self.comparison_job().map(|j| j.id)
+                Some(job)
             } else {
-                None
+                self.comparison_job().map(|j| j.id)
             },
         ))
     }
@@ -244,7 +242,7 @@ mod tests {
             job.status = Status::Succeeded;
             app.library.jobs.push(job);
         }
-        app.selected = Some((id, Some(app.library.jobs[0].id)));
+        app.selected = Some((id, app.library.jobs[0].id));
         // No true-peak measurement is needed for the website's relative matching.
         let report = |loudness| analysis::Analysis::new(serde_json::json!({"loudness": loudness}));
         for (a, b) in [
@@ -283,12 +281,12 @@ mod tests {
         app.output_side = true;
         assert_eq!(app.selected_gain(), 1.);
         app.equalize = true;
-        app.selected = Some((id, None));
+        app.selected = None;
         app.library.tracks[0].analysis = Some(report(-9.));
         assert_eq!(
             app.selected_gain(),
             1.,
-            "an original alone has no comparison partner"
+            "no selection has no comparison partner"
         );
     }
 

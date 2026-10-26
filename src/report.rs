@@ -93,7 +93,7 @@ impl App {
 
     fn report_text(&self) -> String {
         let jobs: Vec<Value> = self.library.jobs.iter().filter(|job| {
-            self.selected.is_some_and(|key| key.1 == Some(job.id))
+            self.selected.is_some_and(|key| key.1 == job.id)
                 || self.active.as_ref().is_some_and(|active| active.id == job.id)
         }).map(|job| {
             let start = job.log.len().saturating_sub(200);
@@ -172,7 +172,7 @@ mod tests {
             app.library.jobs.push(job);
         }
         app.library.tracks.push(track);
-        app.selected = Some((uuid::Uuid::nil(), Some(uuid::Uuid::from_u128(1))));
+        app.selected = Some((uuid::Uuid::nil(), uuid::Uuid::from_u128(1)));
         app.comparison_job = Some(uuid::Uuid::from_u128(2));
         app.library.jobs[1].analysis_error = Some("Saved comparison report is missing".into());
         let error = "Compare A analysis: Saved comparison report is missing";
@@ -255,7 +255,7 @@ mod tests {
         );
         // An independent report never shields the workspace.
         let mut ui = iced_test::simulator(app.view());
-        ui.click("Add audio…").unwrap();
+        ui.click("Master audio…").unwrap();
         assert!(
             ui.into_messages()
                 .any(|message| matches!(message, Message::BrowseAudio))

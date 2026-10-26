@@ -3,7 +3,7 @@ use crate::descriptions::Topic;
 use iced::widget::{column, responsive};
 
 const SETTINGS_WIDTH: f32 = 330.;
-const HISTORY_WIDTH: f32 = 215.;
+const HISTORY_WIDTH: f32 = 300.;
 
 impl App {
     pub(super) fn view(&self) -> Element<'_, Message> {
@@ -45,7 +45,7 @@ impl App {
                         .on_input(Message::Input)
                         .on_submit(Message::AddInput)
                         .padding(6),
-                    button("Add")
+                    button("Master")
                         .on_press_maybe((!self.input.is_empty()).then_some(Message::AddInput))
                         .style(theme::normal)
                         .padding(6),
@@ -61,10 +61,15 @@ impl App {
             let mut title = row![
                 column![
                     compact_text(track.name.clone(), source_tooltip(track), 17., true),
-                    text(self.job().map_or_else(
-                        || "Original".into(),
-                        |job| { format!("{} · {}", self.library.job_time_label(job), job.status) }
-                    ))
+                    text(
+                        self.job()
+                            .map(|job| format!(
+                                "{} · {}",
+                                self.library.job_time_label(job),
+                                job.status
+                            ))
+                            .unwrap_or_default()
+                    )
                     .size(12)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 ]
@@ -123,74 +128,85 @@ impl App {
     }
 
     fn history_view(&self) -> Element<'_, Message> {
-        let mut history = column![].spacing(8);
-        for track in self.library.tracks.iter().rev() {
-            let key = (track.id, None);
-            let mut entries = column![
-                compact_text(track.name.clone(), source_tooltip(track), 14., true),
+        let keys = self.history_keys();
+        let mut history = column![].spacing(0);
+        for &key in &keys {
+            let Some(track) = self.library.tracks.iter().find(|track| track.id == key.0) else {
+                continue;
+            };
+            let Some(job) = self.library.jobs.iter().find(|job| job.id == key.1) else {
+                continue;
+            };
+            let label = self.library.job_label(job);
+            let detail = format!("{} · {}", job.status, job.memo);
+            let failed = matches!(job.status, Status::Failed | Status::Interrupted);
+            let label = if failed { format!("! {label}") } else { label };
+            let cells = row![
+                container(compact_text(label, detail, 12., false)).width(132),
+                container(compact_text(
+                    track.name.clone(),
+                    source_tooltip(track),
+                    12.,
+                    true
+                ))
+                .width(Fill),
+            ]
+            .spacing(8)
+            .align_y(iced::Center);
+            let selected = self.selected == Some(key);
+            let row = button(cells)
+                .on_press(Message::Select(key))
+                .width(Fill)
+                .height(32)
+                .padding([6, 5])
+                .style(move |theme, status| theme::history_row(theme, status, selected, failed));
+            let row: Element<'_, Message> = if job.status == Status::Processing {
+                iced::widget::stack![
+                    row,
+                    container(progress_bar(0.0..=1.0, job.progress).girth(2))
+                        .height(Fill)
+                        .align_bottom(Fill)
+                ]
+                .into()
+            } else {
+                row.into()
+            };
+            history = history.push(
                 iced::widget::mouse_area(
-                    button("Original")
-                        .on_press(Message::Select(key))
-                        .width(Fill)
-                        .padding(5)
-                        .style(if self.selected == Some(key) {
-                            theme::selected
-                        } else {
-                            theme::normal
-                        })
+                    container(row).id(format!("history-{}-{:?}", key.0, key.1)),
                 )
                 .on_right_press(Message::Menu(menu::Event::Context(key))),
-            ]
-            .spacing(4);
-            let jobs: Vec<_> = self
-                .library
-                .jobs
-                .iter()
-                .filter(|j| j.track_id == track.id)
-                .collect();
-            for job in jobs.into_iter().rev() {
-                let key = (track.id, Some(job.id));
-                let label = self.library.job_label(job);
-                let failed = matches!(job.status, Status::Failed | Status::Interrupted);
-                let label = if failed { format!("! {label}") } else { label };
-                entries = entries.push(
-                    iced::widget::mouse_area(
-                        button(
-                            container(compact_text(label.clone(), job.memo.clone(), 12., false))
-                                .style(move |_| iced::widget::container::Style {
-                                    text_color: Some(if failed {
-                                        theme::ERROR
-                                    } else {
-                                        theme::LABEL
-                                    }),
-                                    ..Default::default()
-                                }),
-                        )
-                        .width(Fill)
-                        .padding(5)
-                        .style(if self.selected == Some(key) {
-                            theme::selected
-                        } else {
-                            theme::normal
-                        })
-                        .on_press(Message::Select(key)),
-                    )
-                    .on_right_press(Message::Menu(menu::Event::Context(key))),
-                );
-                if job.status == Status::Processing {
-                    entries = entries.push(progress_bar(0.0..=1.0, job.progress).girth(3));
-                }
-            }
-            history = history.push(entries).push(rule::horizontal(1));
+            );
         }
+        let list: Element<'_, Message> = scrollable(history)
+            .id("history-list")
+            .on_scroll(|viewport| Message::HistoryScroll(viewport.absolute_offset().y))
+            .spacing(4)
+            .height(Fill)
+            .into();
+        let list = crate::history::HistoryInput {
+            content: list,
+            keys,
+            selected: self.selected,
+            offset: self.history_offset,
+        };
         let pane = column![
             text("Audio & history").size(15),
-            button("Add audio…")
+            button("Master audio…")
                 .on_press(Message::BrowseAudio)
                 .width(Fill)
                 .padding(6),
-            text("Drop audio anywhere in window").size(12),
-            scrollable(history).spacing(4).height(Fill)
+            text("Drop audio to master").size(12),
+            container(
+                row![
+                    text("Time").size(12).width(132),
+                    text("Input audio").size(12).width(Fill)
+                ]
+                .spacing(8)
+            )
+            .padding([0, 5]),
+            rule::horizontal(1),
+            Element::from(list),
         ]
         .spacing(8);
         container(pane)
@@ -318,7 +334,7 @@ impl App {
     fn analysis_view(&self) -> Element<'_, Message> {
         let Some(track) = self.track() else {
             return column![
-                text("Select an original or mastering result")
+                text("Master audio to create a result")
                     .size(18)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 text("History switches audio at the same playback position.")
@@ -732,7 +748,7 @@ impl App {
         }
         let issue = self.settings_issue().or_else(|| {
             if track.is_none() {
-                Some((None, "Select an input first.".into()))
+                Some((None, "Master new audio or select a result.".into()))
             } else if self.root.is_none() {
                 Some((None, "Data directory unavailable.".into()))
             } else {
@@ -742,9 +758,9 @@ impl App {
         panel
             .push(
                 button(if self.active.is_some() {
-                    "Run mastering · queue next"
+                    "Create variation · queue next"
                 } else {
-                    "Run mastering"
+                    "Create variation"
                 })
                 .on_press_maybe(issue.is_none().then_some(Message::Master))
                 .width(Fill)

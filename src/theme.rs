@@ -348,6 +348,35 @@ catalog!(rule, |_: &Theme| rule::Style {
     ..rule::default(&iced::Theme::Light)
 });
 
+/// Flat list rows use a persistent selection color without button bevels.
+pub fn history_row(
+    _: &Theme,
+    status: button::Status,
+    selected: bool,
+    failed: bool,
+) -> button::Style {
+    button::Style {
+        background: Some(
+            if selected {
+                BLUE
+            } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                iced::color!(0xE2EDFC)
+            } else {
+                Color::WHITE
+            }
+            .into(),
+        ),
+        text_color: if selected {
+            Color::WHITE
+        } else if failed {
+            ERROR
+        } else {
+            INK
+        },
+        ..button::Style::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
