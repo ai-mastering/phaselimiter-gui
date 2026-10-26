@@ -251,7 +251,10 @@ class CargoOutputDirectory(unittest.TestCase):
                         patch.object(package_common, 'ROOT', project):
                     if override is not None:
                         os.environ['CARGO_TARGET_DIR'] = override
-                    self.assertEqual(package_common.cargo_target_directory(), expected)
+                    # Cargo may resolve symlinks in the working directory (for example,
+                    # macOS /var -> /private/var) when expanding a relative target path.
+                    self.assertEqual(package_common.cargo_target_directory().resolve(),
+                                     expected.resolve())
                     self.assertFalse(expected.exists())
                     self.assertFalse((project / 'target').exists())
 
