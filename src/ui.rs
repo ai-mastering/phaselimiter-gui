@@ -891,21 +891,21 @@ impl App {
             text("Engine & resources").size(14),
             text("Blank: bundled with this app. Non-empty: use the specified path.").size(12),
             button("Clear paths / use bundled tools").on_press(Message::UseBundledTools).style(theme::normal),
-            field(
+            path_setting(
                 "phase_limiter executable",
                 &self.library.app_settings.backend,
                 Field::Backend
             ),
-            field(
+            path_setting(
                 "FFmpeg executable / PATH name",
                 &self.library.app_settings.ffmpeg,
                 Field::Ffmpeg
             ),
-            field("sound_quality2_cache", &self.library.app_settings.cache, Field::Cache),
+            path_setting("sound_quality2_cache", &self.library.app_settings.cache, Field::Cache),
             text("Professionality uses audio_detector beside phase_limiter and resource/detection_preparation.json with its analysis_data corpus.")
                 .size(12),
             rule::horizontal(1),
-            field("Default export directory", &self.library.app_settings.export_dir, Field::ExportDir),
+            path_setting("Default export directory", &self.library.app_settings.export_dir, Field::ExportDir),
             rule::horizontal(1),
             text(format!(
                 "Library: {:.1} MiB",
@@ -983,4 +983,16 @@ fn config_summary(c: &model::Config) -> String {
             "mastering off".into()
         }
     )
+}
+
+fn path_setting<'a>(label: &'static str, value: &'a str, setting: Field) -> Element<'a, Message> {
+    row![
+        field(label, value, setting),
+        button("Browse…")
+            .on_press(Message::BrowseSettingPath(setting))
+            .style(theme::normal),
+    ]
+    .spacing(8)
+    .align_y(iced::Bottom)
+    .into()
 }

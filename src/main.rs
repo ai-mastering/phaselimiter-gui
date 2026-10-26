@@ -111,6 +111,8 @@ enum Message {
     ToggleLimiterDetails,
     ToggleOptimization,
     ToggleAppSettings,
+    BrowseSettingPath(Field),
+    SettingPathPicked(Field, Option<PathBuf>),
     Compare(ComparisonChoice),
     ReferenceLoaded(PathBuf, Result<analysis::Analysis, String>),
     EditMemo(Uuid, String),
@@ -797,6 +799,43 @@ impl App {
             Message::ShowMastering => {
                 self.show_settings = true;
                 self.show_app_settings = false;
+            }
+            Message::BrowseSettingPath(field) => {
+                let title = match field {
+                    Field::Backend => "Choose phase_limiter executable",
+                    Field::Ffmpeg => "Choose FFmpeg executable",
+                    Field::Cache => "Choose sound_quality2_cache",
+                    Field::ExportDir => "Choose default export directory",
+                    _ => return Task::none(),
+                };
+                let current = PathBuf::from(self.field_value(field));
+                tasks.push(Task::perform(
+                    async move {
+                        let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
+                        if current.is_dir() {
+                            dialog = dialog.set_directory(&current);
+                        } else if let Some(parent) = current.parent().filter(|p| p.is_dir()) {
+                            dialog = dialog.set_directory(parent);
+                        }
+                        let picked = if field == Field::ExportDir {
+                            dialog.pick_folder().await
+                        } else {
+                            dialog.pick_file().await
+                        };
+                        picked.map(|file| file.path().to_path_buf())
+                    },
+                    move |path| Message::SettingPathPicked(field, path),
+                ));
+            }
+            Message::SettingPathPicked(field, path) => {
+                if matches!(
+                    field,
+                    Field::Backend | Field::Ffmpeg | Field::Cache | Field::ExportDir
+                ) && let Some(path) = path
+                {
+                    *self.field_mut(field) = path.to_string_lossy().into_owned();
+                    save = true;
+                }
             }
             Message::ToggleAppSettings => {
                 self.show_app_settings = !self.show_app_settings;
@@ -1793,6 +1832,32 @@ mod tests {
         app.queue_master().unwrap();
         assert_eq!(app.library.jobs[0].track_id, Uuid::from_u128(1));
     }
+    #[test]
+    fn setting_path_selection_is_saved_and_cancellation_preserves_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        for field in [
+            Field::Backend,
+            Field::Ffmpeg,
+            Field::Cache,
+            Field::ExportDir,
+        ] {
+            let path = dir.path().join("日本語 selected path");
+            let _ = app.update(Message::SettingPathPicked(field, Some(path.clone())));
+            assert_eq!(app.field_value(field), path.to_string_lossy());
+            let _ = app.update(Message::SettingPathPicked(field, None));
+            assert_eq!(app.field_value(field), path.to_string_lossy());
+        }
+        let saved = Library::load(dir.path()).unwrap();
+        assert_eq!(saved.app_settings.backend, app.library.app_settings.backend);
+        assert_eq!(saved.app_settings.ffmpeg, app.library.app_settings.ffmpeg);
+        assert_eq!(saved.app_settings.cache, app.library.app_settings.cache);
+        assert_eq!(
+            saved.app_settings.export_dir,
+            app.library.app_settings.export_dir
+        );
+    }
+
     #[test]
     fn history_recall_preserves_tool_overrides_and_clearing_them_does_not_change_history() {
         let dir = tempfile::tempdir().unwrap();
