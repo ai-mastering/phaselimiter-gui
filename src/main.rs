@@ -1135,9 +1135,11 @@ impl App {
                 tasks.push(self.load_reference());
                 if let Some((id, job)) = self.selected {
                     for key in [(id, None), (id, job)] {
-                        if !self.analysis_queue.contains(&key) && self.analyzing != Some(key) {
+                        if self.analyzing != Some(key) {
                             self.force_analysis.insert(key);
-                            self.analysis_queue.push_back(key);
+                            if !self.analysis_queue.contains(&key) {
+                                self.analysis_queue.push_back(key);
+                            }
                         }
                     }
                 }
@@ -1559,6 +1561,31 @@ mod tests {
         let saved = Library::load(dir.path()).unwrap();
         assert!(saved.tracks.is_empty());
         assert!(saved.selected.is_none());
+    }
+
+    #[test]
+    fn reanalyze_forces_fresh_analysis_for_items_already_waiting_in_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let key = app.selected.unwrap();
+        let source = dir.path().join("other.wav");
+        std::fs::write(&source, b"other audio").unwrap();
+        let other = library::import(dir.path(), source, Uuid::from_u128(1)).unwrap();
+        app.analyzing = Some((other.id, None));
+        app.library.tracks.push(other);
+        app.analysis_queue.push_back(key);
+        let _ = app.update(Message::Analyze);
+        assert_eq!(
+            app.analysis_queue.iter().copied().collect::<Vec<_>>(),
+            vec![key]
+        );
+        assert!(
+            app.force_analysis.contains(&key),
+            "Reanalyze must bypass the cache even when already queued"
+        );
+        let _ = app.update(Message::Analyze);
+        assert_eq!(app.analysis_queue.len(), 1);
+        assert!(app.force_analysis.contains(&key));
     }
 
     #[test]
