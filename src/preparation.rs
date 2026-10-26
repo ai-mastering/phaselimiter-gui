@@ -75,17 +75,26 @@ impl App {
             self.track()?.analysis.as_ref()
         }
     }
-    pub(super) fn selected_gain(&self) -> f32 {
-        // One fixed target for every item; never normalize against the last selected item.
-        if self.equalize {
-            self.listening_analysis()
-                .and_then(|a| Some((a.number("loudness")?, a.number("true_peak")?)))
-                .map_or(1., |(loudness, peak)| {
-                    10f64.powf((-18. - loudness).min(-1. - peak).clamp(-60., 24.) / 20.) as f32
-                })
-        } else {
-            1.
+    pub(super) fn matching_loudness(&self) -> Option<(f64, f64)> {
+        let job = self.job()?;
+        if job.status != Status::Succeeded {
+            return None;
         }
+        Some((
+            self.comparison_analysis()?.number("loudness")?,
+            job.analysis.as_ref()?.number("loudness")?,
+        ))
+    }
+    pub(super) fn selected_gain(&self) -> f32 {
+        if !self.equalize {
+            return 1.;
+        }
+        let Some((a, b)) = self.matching_loudness() else {
+            return 1.;
+        };
+        // Match the quieter member of the current A/B pair; never amplify either.
+        let loudness = if self.output_side { b } else { a };
+        10f64.powf((a.min(b) - loudness) / 20.) as f32
     }
     pub(super) fn update_gain(&self) {
         if !self.loading && self.listening_key() == self.active_key {
@@ -210,6 +219,78 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loudness_matching_only_attenuates_the_louder_member_of_the_current_pair() {
+        let mut app = App::default();
+        let id = uuid::Uuid::nil();
+        app.library.tracks.push(library::Track {
+            id,
+            name: "test audio".into(),
+            source: "unused.wav".into(),
+            input: "unused.wav".into(),
+            hash: String::new(),
+            added: 0,
+            analysis: None,
+            analysis_error: None,
+        });
+        for job_id in [1, 2] {
+            let mut job = crate::model::test_job(
+                "unused.wav".into(),
+                format!("result-{job_id}.wav").into(),
+                app.library.draft.parse().unwrap(),
+                job_id,
+            );
+            job.status = Status::Succeeded;
+            app.library.jobs.push(job);
+        }
+        app.selected = Some((id, Some(app.library.jobs[0].id)));
+        // No true-peak measurement is needed for the website's relative matching.
+        let report = |loudness| analysis::Analysis::new(serde_json::json!({"loudness": loudness}));
+        for (a, b) in [
+            (-12., -9.),
+            (-9., -12.),
+            (-9., -9.),
+            (-80., -10.),
+            (-10., -80.),
+        ] {
+            app.library.tracks[0].analysis = Some(report(a));
+            app.library.jobs[0].analysis = Some(report(b));
+            for output_side in [false, true] {
+                app.output_side = output_side;
+                let gain = app.selected_gain();
+                assert!(gain > 0. && gain <= 1.);
+                let matched = if output_side { b } else { a } + 20. * f64::from(gain).log10();
+                assert!((matched - a.min(b)).abs() < 0.001);
+            }
+        }
+        app.library.tracks[0].analysis = None;
+        for output_side in [false, true] {
+            app.output_side = output_side;
+            assert_eq!(app.selected_gain(), 1., "wait for both sides' analysis");
+        }
+        app.library.jobs[1].analysis = Some(report(-20.));
+        app.library.jobs[0].analysis = Some(report(-10.));
+        app.comparison_job = Some(app.library.jobs[1].id);
+        app.output_side = true;
+        assert!((app.selected_gain() - 10f32.powf(-10. / 20.)).abs() < 1e-6);
+        app.output_side = false;
+        assert_eq!(app.selected_gain(), 1.);
+        app.library.jobs[0].analysis = None;
+        assert_eq!(app.selected_gain(), 1.);
+        app.library.jobs[0].analysis = Some(report(-10.));
+        app.equalize = false;
+        app.output_side = true;
+        assert_eq!(app.selected_gain(), 1.);
+        app.equalize = true;
+        app.selected = Some((id, None));
+        app.library.tracks[0].analysis = Some(report(-9.));
+        assert_eq!(
+            app.selected_gain(),
+            1.,
+            "an original alone has no comparison partner"
+        );
+    }
 
     #[test]
     fn cache_evicts_least_recently_used_and_coalesces_pending_decodes() {

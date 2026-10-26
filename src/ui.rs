@@ -370,9 +370,12 @@ impl App {
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             );
         }
-        if self.equalize && self.listening_analysis().is_none() {
+        if self.equalize
+            && self.job().is_some_and(|j| j.status == Status::Succeeded)
+            && self.matching_loudness().is_none()
+        {
             transport = transport.push(
-                text("Loudness matching awaits analysis.")
+                text("Loudness matching awaits analysis for both A and B.")
                     .size(12)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             );

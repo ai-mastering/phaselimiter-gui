@@ -846,6 +846,8 @@ impl App {
                 self.comparison_job = choice.job;
                 if !self.output_side {
                     tasks.push(self.prepare());
+                } else {
+                    self.update_gain();
                 }
                 save = true;
             }
@@ -2191,12 +2193,13 @@ mod tests {
             app.listening_key(),
             Some((Uuid::from_u128(0), Some(app.library.jobs[0].id)))
         );
-        assert!((app.selected_gain() - 10f32.powf(-6. / 20.)).abs() < 0.0001);
+        assert_eq!(app.selected_gain(), 1.);
         let _ = app.update(Message::Side(true));
         assert_eq!(
             app.listening_key(),
             Some((Uuid::from_u128(0), Some(app.library.jobs[1].id)))
         );
+        assert!((app.selected_gain() - 10f32.powf(-3. / 20.)).abs() < 0.0001);
         assert_eq!(app.library.draft.loudness, "-10");
         assert_eq!(
             Library::load(dir.path()).unwrap().comparison_job,
