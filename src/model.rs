@@ -135,7 +135,10 @@ pub struct Settings {
     pub high_cut: String,
     pub low_cut: String,
     pub mastering: bool,
+    // Legacy analysis-report selection, retained for saved settings.
     pub reference: String,
+    pub use_reference: bool,
+    pub reference_audio: String,
     pub loudness: String,
     pub intensity: String,
     pub ceiling: String,
@@ -272,6 +275,8 @@ impl Default for Settings {
             max_iter2: "400".into(),
             noise_mode: NoiseMode::Linear,
             reference: String::new(),
+            use_reference: false,
+            reference_audio: String::new(),
             loudness: "-9".into(),
             intensity: "1".into(),
             ceiling: "0".into(),
@@ -312,6 +317,8 @@ pub struct Config {
     pub mastering: bool,
     #[serde(default)]
     pub reference: Option<PathBuf>,
+    #[serde(default)]
+    pub reference_audio: Option<PathBuf>,
     pub loudness: f64,
     pub intensity: f64,
     pub ceiling: f64,
@@ -373,6 +380,9 @@ impl Settings {
         if evaluations == 0 || evaluations > i32::MAX as u32 {
             return Err("Evaluation budget: use 1 to 2147483647.".into());
         }
+        if self.use_reference && self.reference_audio.is_empty() {
+            return Err("Choose a reference audio file.".into());
+        }
         let config = Config {
             noise_mode: self.noise_mode,
             max_iter2: integer(&self.max_iter2, "max_iter2")?,
@@ -395,6 +405,8 @@ impl Settings {
             mastering: self.mastering,
             reference: (self.mastering && !self.reference.is_empty())
                 .then(|| PathBuf::from(&self.reference)),
+            reference_audio: (self.mastering && self.use_reference)
+                .then(|| PathBuf::from(&self.reference_audio)),
             loudness: if self.reference_mode != ReferenceMode::Zero {
                 number(&self.loudness, "Target level", -60.0, 0.0)?
             } else {
@@ -406,6 +418,7 @@ impl Settings {
                 1.0
             },
             ceiling: number(&self.ceiling, "Ceiling", -20.0, 0.0)?,
+
             sample_rate,
             bit_depth,
             workers: {

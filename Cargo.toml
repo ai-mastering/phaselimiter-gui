@@ -24,6 +24,7 @@ miniaudio = { package = "om-fork-miniaudio", version = "0.12.2", default-feature
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 fs2 = "0.4.3"
 rtrb = "0.4.0"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

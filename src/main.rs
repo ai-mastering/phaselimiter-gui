@@ -3,6 +3,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 use uuid::Uuid;
 mod analysis;
+mod analysis_cache;
 mod backend;
 mod comparison;
 mod controls;
@@ -14,6 +15,7 @@ mod model;
 mod playback;
 mod plots;
 mod preparation;
+mod reference;
 mod theme;
 mod ui;
 
@@ -92,7 +94,13 @@ enum Message {
     Solver(Solver),
     PreserveBass(bool),
     PreCompression(bool),
-    ChooseReference(ReferenceChoice),
+    ReferenceEnabled(bool),
+    ReferencePath(String),
+    ReferenceSubmit,
+    BrowseReference,
+    ReferencePicked(u64, Option<PathBuf>),
+    DraftReferenceAnalyzed(u64, Result<reference::Prepared, String>),
+    ReferenceFocused(bool),
     Compose,
     ShowAnalysis,
     ShowMastering,
@@ -165,7 +173,10 @@ struct App {
     comparison_job: Option<Uuid>,
     reference_report: Option<(PathBuf, Result<analysis::Analysis, String>)>,
     reference_pending: Option<PathBuf>,
+    draft_reference: reference::State,
+    force_analysis: HashSet<AudioKey>,
     composer_track: Option<Uuid>,
+
     show_details: bool,
     show_limiter_details: bool,
     show_optimization: bool,
@@ -214,6 +225,8 @@ impl Default for App {
             comparison_job: None,
             reference_report: None,
             reference_pending: None,
+            draft_reference: reference::State::default(),
+            force_analysis: HashSet::new(),
             composer_track: None,
             show_details: false,
             show_limiter_details: false,
@@ -283,6 +296,7 @@ impl App {
                 ))
             }
         }
+        app.invalidate_draft_reference(true);
         let task = app.prepare();
         let analysis = app.start_analysis();
         let storage = app.refresh_storage();
@@ -388,7 +402,11 @@ impl App {
         )
     }
     fn start_analysis(&mut self) -> Task<Message> {
-        if self.analyzing.is_some() || self.closing {
+        if self.analyzing.is_some()
+            || self.closing
+            || self.draft_reference.active
+            || (self.library.draft.use_reference && self.draft_reference.due.is_some())
+        {
             return Task::none();
         }
         let Some(root) = self.root.clone() else {
@@ -401,13 +419,17 @@ impl App {
             self.analyzing = Some(key);
             let settings = self.library.app_settings.clone();
             return Task::perform(
-                analysis::run(
+                analysis::run_with_options(
                     root,
                     input,
                     hash,
                     settings.backend_path(),
                     settings.ffmpeg_command(),
                     settings.cache_path(),
+                    analysis::Options {
+                        force: self.force_analysis.remove(&key),
+                        ..analysis::Options::FULL
+                    },
                 ),
                 move |result| Message::Analyzed(key, result),
             );
@@ -455,29 +477,34 @@ impl App {
             .ok_or("Select an input first.")?
             .clone();
         let root = self.root.as_ref().ok_or("Data directory unavailable.")?;
-        let config = self.library.draft.parse()?;
+        let mut config = self.library.draft.parse()?;
+        if self.library.draft.mastering && self.library.draft.use_reference {
+            config.reference = Some(
+                self.ready_reference()
+                    .map_err(|e| format!("Reference: {e}"))?
+                    .to_path_buf(),
+            );
+            let prepared = self
+                .draft_reference
+                .report
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .ok_or("Reference: analysis is not ready.")?;
+            library::verify(
+                std::path::Path::new(&self.library.draft.reference_audio),
+                &prepared.source_hash,
+            )
+            .map_err(|e| format!("Reference: {e}"))?;
+        }
         if let Some(reference) = &config.reference {
-            let expected = self
-                .library
-                .tracks
-                .iter()
-                .filter_map(|t| t.analysis.as_ref())
-                .find(|a| a.path() == Some(reference.as_path()))
-                .and_then(|a| a.path())
-                .and_then(|p| p.file_stem())
+            let expected = reference
+                .file_stem()
                 .and_then(|s| s.to_str())
-                .map(str::to_owned)
-                .or_else(|| {
-                    self.library
-                        .jobs
-                        .iter()
-                        .find(|j| j.config.reference.as_ref() == Some(reference))
-                        .and_then(|j| j.reference_hash.clone())
-                })
-                .ok_or("Reference: choose an analyzed library audio.")?;
-            library::verify(reference, &expected).map_err(|e| format!("Reference: {e}"))?;
+                .ok_or("Reference: analysis has no content hash.")?;
+            library::verify(reference, expected).map_err(|e| format!("Reference: {e}"))?;
         }
         let id = Uuid::new_v4();
+
         let dir = root.join("jobs").join(id.to_string());
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let output = dir.join("output").with_extension(config.format.extension());
@@ -565,7 +592,13 @@ impl App {
                         iced::widget::operation::AbsoluteOffset { x: 0., y },
                     ));
                 }
-                tasks.push(iced::widget::operation::focus(format!("number-{field:?}")));
+                tasks.push(iced::widget::operation::focus(
+                    if field == Field::Reference {
+                        "reference-path".into()
+                    } else {
+                        format!("number-{field:?}")
+                    },
+                ));
             }
             Message::Input(value) => self.input = value,
             Message::AddInput => {
@@ -598,6 +631,7 @@ impl App {
             }
             Message::Mastering(v) => {
                 self.library.draft.mastering = v;
+                self.invalidate_draft_reference(true);
                 self.numeric_edits.clear();
                 self.numeric_errors.clear();
                 save = true;
@@ -654,13 +688,74 @@ impl App {
                 self.library.draft.pre_compression = v;
                 save = true;
             }
-            Message::ChooseReference(choice) => {
+            Message::ReferenceEnabled(enabled) => {
                 if !self.library.draft.mastering {
                     return Task::none();
                 }
                 self.numeric_errors.remove(&Field::Reference);
-                self.library.draft.reference = choice.path;
+                self.library.draft.use_reference = enabled;
+                self.library.draft.reference.clear();
+                self.invalidate_draft_reference(true);
+
                 save = true;
+            }
+            Message::ReferencePath(path) => {
+                if !self.library.draft.mastering {
+                    return Task::none();
+                }
+                self.numeric_errors.remove(&Field::Reference);
+                self.library.draft.reference_audio = path;
+                self.library.draft.reference.clear();
+                self.invalidate_draft_reference(false);
+                save = true;
+            }
+            Message::ReferenceSubmit => {
+                if self.draft_reference.due.is_some()
+                    || (!self.draft_reference.active && self.ready_reference().is_err())
+                {
+                    self.draft_reference.due = Some(std::time::Instant::now());
+                }
+            }
+            Message::ReferenceFocused(focused) => {
+                if self.draft_reference.focused && !focused && self.draft_reference.due.is_some() {
+                    self.draft_reference.due = Some(std::time::Instant::now());
+                }
+                self.draft_reference.focused = focused;
+            }
+            Message::BrowseReference => {
+                if !self.library.draft.mastering {
+                    return Task::none();
+                }
+                self.numeric_errors.remove(&Field::Reference);
+                let generation = self.draft_reference.generation;
+                tasks.push(Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Choose reference audio")
+                            .pick_file()
+                            .await
+                            .map(|f| f.path().to_path_buf())
+                    },
+                    move |path| Message::ReferencePicked(generation, path),
+                ));
+            }
+            Message::ReferencePicked(generation, path) => {
+                if generation == self.draft_reference.generation
+                    && let Some(path) = path
+                {
+                    self.library.draft.reference_audio = path.display().to_string();
+                    self.library.draft.reference.clear();
+                    self.invalidate_draft_reference(true);
+                    save = true;
+                }
+            }
+            Message::DraftReferenceAnalyzed(generation, result) => {
+                self.draft_reference.active = false;
+                self.draft_reference.cancel = None;
+                if generation == self.draft_reference.generation {
+                    self.numeric_errors.remove(&Field::Reference);
+                    self.draft_reference.report = Some(result);
+                }
             }
             Message::Compose => {
                 self.composer_track = self.selected.map(|key| key.0);
@@ -700,6 +795,8 @@ impl App {
                     self.library.draft = settings_from_config(&job.config);
                     self.numeric_edits.clear();
                     self.numeric_errors.clear();
+                    self.invalidate_draft_reference(true);
+
                     self.show_settings = true;
                     self.show_app_settings = false;
                     save = true;
@@ -976,11 +1073,16 @@ impl App {
                 save = true;
             }
             Message::Analyze => {
+                if self.library.draft.use_reference {
+                    self.draft_reference.force = true;
+                    self.invalidate_draft_reference(true);
+                }
                 self.reference_report = None;
                 tasks.push(self.load_reference());
                 if let Some((id, job)) = self.selected {
                     for key in [(id, None), (id, job)] {
                         if !self.analysis_queue.contains(&key) && self.analyzing != Some(key) {
+                            self.force_analysis.insert(key);
                             self.analysis_queue.push_back(key);
                         }
                     }
@@ -1030,6 +1132,12 @@ impl App {
                     .is_some_and(|deadline| std::time::Instant::now() >= deadline)
                 {
                     save = true;
+                }
+                if self.library.draft.use_reference {
+                    tasks.push(
+                        iced::widget::operation::is_focused("reference-path")
+                            .map(Message::ReferenceFocused),
+                    );
                 }
                 if let Some(worker) = &self.save_worker
                     && let Some(error) = worker.error()
@@ -1087,6 +1195,9 @@ impl App {
             },
             Message::Close => {
                 self.closing = true;
+                if let Some(cancel) = &self.draft_reference.cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
                 self.running = false;
                 self.player.pause();
                 self.save();
@@ -1102,6 +1213,7 @@ impl App {
             && self.active.is_none()
             && self.finalizing.is_empty()
             && self.importing == 0
+            && !self.draft_reference.active
         {
             if self.save_sync() {
                 return iced::exit();
@@ -1109,6 +1221,7 @@ impl App {
             self.closing = false;
         }
         tasks.push(self.start_next());
+        tasks.push(self.start_draft_reference());
         tasks.push(self.start_analysis());
         self.refresh_diagnostics();
         Task::batch(tasks)
@@ -1192,63 +1305,6 @@ impl App {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReferenceChoice {
-    path: String,
-    label: String,
-}
-impl std::fmt::Display for ReferenceChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.label)
-    }
-}
-impl App {
-    fn reference_choices(&self) -> Vec<ReferenceChoice> {
-        let mut choices = vec![ReferenceChoice {
-            path: String::new(),
-            label: "Reference: default".into(),
-        }];
-        choices.extend(
-            self.library
-                .tracks
-                .iter()
-                .filter(|t| t.analysis_error.is_none())
-                .filter_map(|t| {
-                    let analysis = t.analysis.as_ref().filter(|a| a.available())?;
-                    Some(ReferenceChoice {
-                        path: analysis.path()?.display().to_string(),
-                        label: format!(
-                            "Reference: {} · {}",
-                            t.name,
-                            chrono::DateTime::from_timestamp(t.added as i64, 0).map_or_else(
-                                || "Date unknown".into(),
-                                |t| t
-                                    .with_timezone(&chrono::Local)
-                                    .format("%Y/%m/%d %H:%M:%S")
-                                    .to_string()
-                            )
-                        ),
-                    })
-                }),
-        );
-        if !self.library.draft.reference.is_empty()
-            && !choices
-                .iter()
-                .any(|c| c.path == self.library.draft.reference)
-        {
-            choices.push(ReferenceChoice {
-                path: self.library.draft.reference.clone(),
-                label: "Reference: saved with this result".into(),
-            });
-        }
-        choices
-    }
-    fn selected_reference(&self) -> Option<ReferenceChoice> {
-        self.reference_choices()
-            .into_iter()
-            .find(|r| r.path == self.library.draft.reference)
-    }
-}
 fn field<'a>(label: &'static str, value: &'a str, field: Field) -> Element<'a, Message> {
     column![
         text(label).size(12),
@@ -1288,9 +1344,16 @@ fn settings_from_config(c: &model::Config) -> Settings {
         pre_compression: c.pre_compression,
         format: c.format,
         solver: c.solver,
+        use_reference: c.reference_audio.is_some(),
+        reference_audio: c
+            .reference_audio
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
         reference: c
             .reference
             .as_ref()
+            .filter(|_| c.reference_audio.is_none())
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
     }
@@ -1311,6 +1374,28 @@ mod tests {
         app.library.tracks.push(track);
         app.selected = Some((Uuid::from_u128(0), None));
         app
+    }
+    #[test]
+    fn disabled_mastering_ignores_pending_external_reference_and_preserves_uuid_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.library.draft.use_reference = true;
+        app.library.draft.reference_audio = "missing reference.wav".into();
+        app.library.draft.reference = "missing report.json".into();
+        app.invalidate_draft_reference(true);
+        assert!(!app.reference_ready());
+        let _ = app.update(Message::Mastering(false));
+        assert!(app.reference_ready());
+        assert!(app.draft_reference.due.is_none());
+        assert!(!app.draft_reference.active);
+        app.queue_master().unwrap();
+        let job = &app.library.jobs[0];
+        assert_eq!(job.id.get_version(), Some(uuid::Version::Random));
+        assert!(job.config.reference.is_none());
+        assert!(job.config.reference_audio.is_none());
+        let before = app.library.draft.reference_audio.clone();
+        let _ = app.update(Message::ReferencePath("ignored while disabled.wav".into()));
+        assert_eq!(app.library.draft.reference_audio, before);
     }
     #[test]
     fn validation_opens_the_collapsed_group_containing_the_invalid_setting() {
@@ -1766,6 +1851,57 @@ mod tests {
         assert!(ui.find("Ear Damage").is_err());
         ui.click("Run mastering").unwrap();
         assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
+    }
+
+    #[test]
+    fn external_reference_settings_round_trip_and_history_deletion_preserves_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let source = dir.path().join("professional target.wav");
+        std::fs::write(&source, b"reference audio").unwrap();
+        app.library.draft.use_reference = true;
+        app.library.draft.reference_audio = source.display().to_string();
+        app.draft_reference.report = Some(Ok(reference::Prepared {
+            analysis: analysis::Analysis::store(dir.path(), br#"{"bands":[],"covariance":[]}"#)
+                .unwrap(),
+            source_hash: library::hash(&source).unwrap(),
+        }));
+        app.queue_master().unwrap();
+        let job = &app.library.jobs[0];
+        assert_eq!(job.config.reference_audio.as_ref(), Some(&source));
+        assert_ne!(job.config.reference.as_ref(), Some(&source));
+        let restored = settings_from_config(&job.config);
+        assert!(restored.use_reference);
+        assert_eq!(restored.reference_audio, source.display().to_string());
+        assert!(restored.reference.is_empty());
+        app.library.draft = restored.clone();
+        app.library.jobs.clear();
+        assert_eq!(
+            app.library.draft.reference_audio,
+            source.display().to_string()
+        );
+        app.library.save(dir.path()).unwrap();
+        let loaded = Library::load(dir.path()).unwrap();
+        assert_eq!(loaded.draft.reference_audio, source.display().to_string());
+        assert!(loaded.draft.use_reference);
+        std::fs::write(&source, b"changed reference audio").unwrap();
+        assert!(app.queue_master().is_err());
+    }
+
+    #[test]
+    fn reference_checkbox_and_pending_state_disable_mastering() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.library.draft.use_reference = true;
+        let mut ui = iced_test::Simulator::with_size(
+            Default::default(),
+            iced::Size::new(1280., 800.),
+            app.view(),
+        );
+        ui.find("Use reference audio").unwrap();
+        ui.find("Browse…").unwrap();
+        ui.click("Run mastering").unwrap();
+        assert!(!ui.into_messages().any(|m| matches!(m, Message::Master)));
     }
 
     #[test]

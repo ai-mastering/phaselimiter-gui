@@ -73,8 +73,15 @@ impl App {
     }
     pub(super) fn reference_name(&self) -> String {
         let Some(path) = self.reference_path() else {
-            return "Default".into();
+            return "Auto (no reference)".into();
         };
+        if let Some(source) = self.job().and_then(|j| j.config.reference_audio.as_ref()) {
+            return source
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+        }
         self.library
             .tracks
             .iter()
@@ -139,6 +146,8 @@ pub(super) fn settings_differences(
         ("mastering", "Mastering"),
         ("intensity", "Intensity"),
         ("reference", "Reference report"),
+        ("use_reference", "Use reference audio"),
+        ("reference_audio", "Reference audio"),
         ("preserve_bass", "Preserve bass"),
         ("pre_compression", "Pre-compression"),
         ("lowpass_cut", "Lowpass peak Hz"),

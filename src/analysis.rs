@@ -78,6 +78,7 @@ impl Analysis {
         Ok(result)
     }
 
+    #[cfg(test)]
     pub fn available(&self) -> bool {
         self.raw.is_object()
     }
@@ -247,6 +248,29 @@ impl<'de> Deserialize<'de> for Analysis {
     }
 }
 
+#[derive(Clone)]
+pub struct Options {
+    pub sound_quality2: bool,
+    pub detect2: bool,
+    pub force: bool,
+    pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+impl Options {
+    pub const FULL: Self = Self {
+        sound_quality2: true,
+        detect2: true,
+        force: false,
+        cancel: None,
+    };
+    pub const REFERENCE: Self = Self {
+        sound_quality2: false,
+        detect2: false,
+        force: false,
+        cancel: None,
+    };
+}
+
+#[cfg(test)]
 pub async fn run(
     root: PathBuf,
     input: PathBuf,
@@ -255,10 +279,63 @@ pub async fn run(
     ffmpeg: String,
     cache: PathBuf,
 ) -> Result<Analysis, String> {
+    run_with_options(root, input, expected, backend, ffmpeg, cache, Options::FULL).await
+}
+
+pub async fn run_with_options(
+    root: PathBuf,
+    input: PathBuf,
+    expected: String,
+    backend: PathBuf,
+    ffmpeg: String,
+    cache: PathBuf,
+    options: Options,
+) -> Result<Analysis, String> {
     let checked = input.clone();
-    tokio::task::spawn_blocking(move || crate::library::verify(&checked, &expected))
+    let checked_hash = expected.clone();
+    tokio::task::spawn_blocking(move || crate::library::verify(&checked, &checked_hash))
         .await
         .map_err(|e| e.to_string())??;
+    // Unavailable dependencies disable cache lookup, never the partial analysis itself.
+    let key_backend = backend.clone();
+    let key_ffmpeg = ffmpeg.clone();
+    let key_cache = cache.clone();
+    let key_expected = expected.clone();
+    let key_options = options.clone();
+    let cache_entry = tokio::task::spawn_blocking(move || {
+        crate::analysis_cache::entry(
+            &key_expected,
+            &key_backend,
+            &key_ffmpeg,
+            &key_cache,
+            &key_options,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .ok();
+    if options
+        .cancel
+        .as_ref()
+        .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+    {
+        return Err("Reference analysis cancelled.".into());
+    }
+    if !options.force
+        && let Some(entry) = &cache_entry
+        && let Ok(bytes) = std::fs::read(entry)
+        && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+        && cacheable(&value, &options)
+        && let Ok(report) = Analysis::store(&root, &bytes)
+    {
+        let image = entry.with_extension("frequency.png");
+        if image.is_file()
+            && let Some(path) = report.path()
+        {
+            let _ = std::fs::copy(image, path.with_extension("frequency.png"));
+        }
+        return Ok(report);
+    }
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     // The analyzer accepts WAV/WAVEX, not arbitrary FFmpeg-supported inputs.
     let normalized = scratch.path().join("input.wav");
@@ -281,38 +358,49 @@ pub async fn run(
         .kill_on_drop(true);
     #[cfg(windows)]
     normalize.creation_flags(0x08000000);
-    let decoded = tokio::time::timeout(std::time::Duration::from_secs(300), normalize.output())
-        .await
-        .map_err(|_| "Preparing analysis timed out.".to_string())?
-        .map_err(|e| format!("Could not start FFmpeg: {e}"))?;
+    let decoded = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        process_output(&mut normalize, options.cancel.as_deref()),
+    )
+    .await
+    .map_err(|_| "Preparing analysis timed out.".to_string())?
+    .map_err(|e| format!("Could not start FFmpeg: {e}"))?;
     if !decoded.status.success() {
         return Err(format!(
             "Preparing analysis: {}",
             String::from_utf8_lossy(&decoded.stderr)
         ));
     }
+    let ffmpeg_for_key = ffmpeg.clone();
+    let cache_for_key = cache.clone();
     let mut command = tokio::process::Command::new(executable(&backend));
     command
         .args(["--input"])
         .arg(&normalized)
         .arg("--ffmpeg")
         .arg(ffmpeg)
+        .arg(format!("--sound_quality2={}", options.sound_quality2))
+        .arg("--sound_quality2_cache_archiver=binary")
         .arg("--sound_quality2_cache")
         .arg(cache)
         .arg("--tmp")
         .arg(scratch.path())
         .arg("--spectrum_distribution_output")
         .arg(scratch.path().join("frequency.png"))
+        .arg("--analysis_for_visualization=true")
         .arg("--drr=true")
         .arg("--sound_quality=false")
         .stdin(Stdio::null())
         .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x08000000);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(1800), command.output())
-        .await
-        .map_err(|_| "Analysis timed out.".to_string())?
-        .map_err(|e| format!("Could not start audio_analyzer: {e}"))?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(1800),
+        process_output(&mut command, options.cancel.as_deref()),
+    )
+    .await
+    .map_err(|_| "Analysis timed out.".to_string())?
+    .map_err(|e| format!("Could not start audio_analyzer: {e}"))?;
     if !output.status.success() {
         return Err(format!(
             "Analysis failed: {}",
@@ -339,18 +427,28 @@ pub async fn run(
     ] {
         report.remove(key);
     }
-    report.insert("sound_quality_source".into(), Value::from("audio_detector"));
-    report.insert("sound_quality_neighbor_ratio".into(), Value::from(0.01));
-    report.insert("sound_quality_outlier_ratio".into(), Value::from(0.1));
-    match detect_sound_quality(&backend, &output.stdout, scratch.path()).await {
-        Ok(detection) => {
-            report.insert("sound_quality".into(), detection["sound_quality"].clone());
-            report.insert("sound_quality_detection".into(), detection);
-        }
-        Err(error) => {
-            report.insert("sound_quality_error".into(), Value::from(error));
+    if !options.sound_quality2 {
+        report.remove("sound_quality2");
+    }
+    if options.detect2 {
+        report.insert("sound_quality_source".into(), Value::from("audio_detector"));
+        report.insert("sound_quality_neighbor_ratio".into(), Value::from(0.01));
+        report.insert("sound_quality_outlier_ratio".into(), Value::from(0.1));
+        match detect_sound_quality(&backend, &output.stdout, scratch.path()).await {
+            Ok(detection) => {
+                report.insert("sound_quality".into(), detection["sound_quality"].clone());
+                report.insert("sound_quality_detection".into(), detection);
+            }
+            Err(error) => {
+                report.insert("sound_quality_error".into(), Value::from(error));
+            }
         }
     }
+    let checked = input.clone();
+    let checked_hash = expected.clone();
+    tokio::task::spawn_blocking(move || crate::library::verify(&checked, &checked_hash))
+        .await
+        .map_err(|e| e.to_string())??;
     let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
     let analysis = Analysis::store(&root, &bytes)?;
     if let Some(report) = analysis.path() {
@@ -360,8 +458,93 @@ pub async fn run(
                 .map_err(|e| format!("Saving analysis image: {e}"))?;
         }
     }
+    if cacheable(&value, &options)
+        && let Some(entry) = cache_entry
+    {
+        // Check dependencies again: a tool or model may have changed during analysis.
+        let current = tokio::task::spawn_blocking(move || {
+            crate::analysis_cache::entry(
+                &expected,
+                &backend,
+                &ffmpeg_for_key,
+                &cache_for_key,
+                &options,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .ok();
+        if current.as_ref() != Some(&entry) {
+            return Err("Analysis dependencies changed during analysis. Please retry.".into());
+        }
+        if current.as_ref() == Some(&entry) {
+            let _ =
+                crate::analysis_cache::store(&entry, &bytes, &scratch.path().join("frequency.png"));
+        }
+    }
     analysis.plot_data();
     Ok(analysis)
+}
+
+fn cacheable(value: &Value, options: &Options) -> bool {
+    value.is_object()
+        && value.get("sound_quality_error").is_none()
+        && (!options.sound_quality2
+            || value
+                .get("sound_quality2")
+                .and_then(Value::as_f64)
+                .is_some_and(f64::is_finite))
+        && (!options.detect2
+            || value
+                .get("sound_quality")
+                .and_then(Value::as_f64)
+                .is_some_and(f64::is_finite))
+}
+
+// Cancellation kills and reaps the child before a replacement reference starts.
+async fn process_output(
+    command: &mut tokio::process::Command,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> std::io::Result<std::process::Output> {
+    use std::sync::atomic::Ordering;
+    use tokio::io::AsyncReadExt;
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("Missing stdout"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("Missing stderr"))?;
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let (status, out_result, err_result) = tokio::join!(
+        async {
+            loop {
+                if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    child.kill().await?;
+                    return Err(std::io::Error::other("Reference analysis cancelled."));
+                }
+                if let Some(status) = child.try_wait()? {
+                    return Ok(status);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        },
+        stdout.read_to_end(&mut out),
+        stderr.read_to_end(&mut err)
+    );
+    out_result?;
+    err_result?;
+    Ok(std::process::Output {
+        status: status?,
+        stdout: out,
+        stderr: err,
+    })
 }
 
 #[cfg(test)]
@@ -447,6 +630,7 @@ mod tests {
             r#"#!/bin/sh
 [ "$1" = '--input' ] || exit 4
 [ "$(cat "$2")" = normalized ] || exit 5
+printf x >> "$0.calls"
 quality=0
 while [ "$#" -gt 0 ]; do
  case "$1" in
@@ -460,6 +644,23 @@ done
 printf '{"loudness":-10,"sound_quality":0.11,"sound_quality2":0.88,"bands_short":[],"covariance_short":[]}'
 "#,
         );
+        let analyzer = engine.join("bin/audio_analyzer");
+        use std::io::Write;
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&analyzer)
+                .unwrap(),
+            "\n# {}",
+            dir.path().display()
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("cache"), b"fake quality2 model").unwrap();
+        std::fs::write(
+            engine.join("resource/detection_preparation.json"),
+            br#"{"paths":[]}"#,
+        )
+        .unwrap();
         dir
     }
 
@@ -551,5 +752,109 @@ printf '{"sound_quality":0.72,"lof":1.2,"border_lof":1.5,"ranking":[]}'
         let result = run_fixture(dir.path()).await;
         assert_eq!(result.number("sound_quality"), Some(0.));
         assert!(result.sound_quality_error().is_none());
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cache_reuses_merged_scores_and_force_bypasses_it() {
+        let dir = analysis_fixture();
+        let detector = dir.path().join("engine 日本語/bin/audio_detector");
+        write_executable(
+            &detector,
+            "#!/bin/sh\nprintf x >> \"$0.calls\"\nprintf '{\"sound_quality\":0.72}'\n",
+        );
+        let first = run_fixture(dir.path()).await;
+        let report = first.path().unwrap();
+        std::fs::remove_file(report).unwrap();
+        std::fs::remove_file(report.with_extension("frequency.png")).unwrap();
+        let second = run_fixture(dir.path()).await;
+        assert_eq!(first.path(), second.path());
+        assert_eq!(second.number("sound_quality"), Some(0.72));
+        assert_eq!(second.number("sound_quality2"), Some(0.88));
+        assert!(report.with_extension("frequency.png").is_file());
+        let calls = dir.path().join("engine 日本語/bin/audio_analyzer.calls");
+        assert_eq!(std::fs::read(&calls).unwrap(), b"x");
+        assert_eq!(
+            std::fs::read(detector.with_extension("calls")).unwrap(),
+            b"x"
+        );
+        let input = dir.path().join("日本語 input.mp3");
+        run_with_options(
+            dir.path().to_path_buf(),
+            input.clone(),
+            library_hash(&input),
+            dir.path().join("engine 日本語/bin/phase_limiter"),
+            dir.path().join("fake ffmpeg").display().to_string(),
+            dir.path().join("cache"),
+            Options {
+                force: true,
+                ..Options::FULL
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(calls).unwrap(), b"xx");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reference_profile_skips_scores_and_failed_full_results_are_retried() {
+        let dir = analysis_fixture();
+        let detector = dir.path().join("engine 日本語/bin/audio_detector");
+        write_executable(&detector, "#!/bin/sh\nprintf x >> \"$0.calls\"\nexit 7\n");
+        let input = dir.path().join("日本語 input.mp3");
+        let reference = run_with_options(
+            dir.path().to_path_buf(),
+            input.clone(),
+            library_hash(&input),
+            dir.path().join("engine 日本語/bin/phase_limiter"),
+            dir.path().join("fake ffmpeg").display().to_string(),
+            dir.path().join("cache"),
+            Options::REFERENCE,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reference.number("sound_quality"), None);
+        assert_eq!(reference.number("sound_quality2"), None);
+        assert!(!detector.with_extension("calls").exists());
+        assert!(
+            run_fixture(dir.path())
+                .await
+                .sound_quality_error()
+                .is_some()
+        );
+        assert!(
+            run_fixture(dir.path())
+                .await
+                .sound_quality_error()
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read(detector.with_extension("calls")).unwrap(),
+            b"xx"
+        );
+    }
+
+    #[cfg(unix)]
+    fn library_hash(path: &Path) -> String {
+        crate::library::hash(path).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_reaps_the_analysis_process_promptly() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cancel = AtomicBool::new(false);
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("30").kill_on_drop(true);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(process_output(&mut command, Some(&cancel)), async {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                cancel.store(true, Ordering::Relaxed);
+            })
+            .0
+        })
+        .await
+        .unwrap();
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
     }
 }

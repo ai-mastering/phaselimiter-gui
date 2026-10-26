@@ -417,13 +417,7 @@ impl App {
         reveal(field)
     }
     pub(super) fn reference_control(&self) -> Element<'_, Message> {
-        let mut content = column![choice(
-            self.reference_choices(),
-            self.selected_reference(),
-            Message::ChooseReference,
-            self.library.draft.mastering
-        )]
-        .spacing(3);
+        let mut content = column![self.reference_controls()].spacing(3);
         let error = self
             .numeric_errors
             .get(&Field::Reference)
