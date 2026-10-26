@@ -85,22 +85,41 @@ impl App {
             center = center.push(self.transport_view());
         }
         center = center.push(
-            scrollable(self.analysis_view())
-                .spacing(4)
-                .height(Fill)
-                .width(Fill),
+            scrollable(container(self.analysis_view()).padding(iced::Padding {
+                bottom: 10.,
+                ..iced::Padding::ZERO
+            }))
+            .spacing(4)
+            .height(Fill)
+            .width(Fill),
         );
         workspace = workspace
             .push(container(center).clip(true).width(Fill).height(Fill))
             .push(rule::vertical(1))
             .push(
                 container(self.settings_panel())
+                    .padding(iced::Padding {
+                        bottom: 10.,
+                        ..iced::Padding::ZERO
+                    })
                     .clip(true)
                     .width(SETTINGS_WIDTH)
                     .height(Fill),
             );
-        body = body.push(workspace).push(self.status_bar());
-        container(body).padding(10).height(Fill).width(Fill).into()
+        body = body.push(workspace);
+        column![
+            container(body)
+                .padding(iced::Padding {
+                    bottom: 0.,
+                    ..iced::Padding::new(10.)
+                })
+                .height(Fill)
+                .width(Fill),
+            self.status_bar(),
+        ]
+        .height(Fill)
+        .width(Fill)
+        .into()
     }
 
     fn history_view(&self) -> Element<'_, Message> {
@@ -697,11 +716,14 @@ impl App {
         }
         let mut panel = column![
             text("Mastering settings").size(15),
-            scrollable(fields)
-                .id("mastering-fields")
-                .spacing(4)
-                .height(Fill)
-                .width(Fill),
+            scrollable(fields.padding(iced::Padding {
+                bottom: 10.,
+                ..iced::Padding::ZERO
+            }))
+            .id("mastering-fields")
+            .spacing(4)
+            .height(Fill)
+            .width(Fill),
         ]
         .spacing(8)
         .height(Fill);

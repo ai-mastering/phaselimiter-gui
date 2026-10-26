@@ -22,6 +22,14 @@ pub const LABEL: Color = INK;
 pub const DISABLED_LABEL: Color = MUTED;
 pub const ERROR: Color = iced::color!(0xA52D28);
 
+pub fn status_bar(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(iced::color!(0xF0F0EE).into()),
+        text_color: Some(INK),
+        ..Default::default()
+    }
+}
+
 impl iced::theme::Base for Theme {
     fn default(_: iced::theme::Mode) -> Self {
         Self
