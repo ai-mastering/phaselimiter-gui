@@ -88,7 +88,6 @@ enum Message {
     Preferences(preferences::Event),
     WindowOpened(iced::window::Id),
     WindowInput(iced::window::Id, iced::Event, iced::event::Status),
-    ToggleChanges,
     Report(report::Event),
     NoiseMode(NoiseMode),
     CeilingMode(CeilingMode),
@@ -216,7 +215,6 @@ struct App {
     storage_bytes: u64,
     memo_save_at: Option<std::time::Instant>,
     menu: menu::State,
-    show_changes: bool,
     report: Option<report::Report>,
     numeric_edits: HashMap<Field, String>,
     numeric_errors: HashMap<Field, String>,
@@ -268,7 +266,6 @@ impl Default for App {
             storage_bytes: 0,
             memo_save_at: None,
             menu: menu::State::default(),
-            show_changes: false,
             report: None,
             numeric_edits: HashMap::new(),
             numeric_errors: HashMap::new(),
@@ -594,12 +591,6 @@ impl App {
             Message::Preferences(event) => return self.update_preferences(event),
             Message::WindowOpened(id) => return self.window_opened(id),
             Message::WindowInput(id, event, status) => return self.window_input(id, event, status),
-            Message::ToggleChanges => {
-                self.show_changes = !self.show_changes;
-                if self.show_changes {
-                    tasks.push(iced::widget::operation::snap_to_end("mastering-fields"));
-                }
-            }
             Message::Edit(field, value) => {
                 if preferences::is_field(field) {
                     return self.update_preferences(preferences::Event::Edit(field, value));
@@ -1781,12 +1772,12 @@ mod tests {
                     .is_some()
             );
             assert!(
-                ui.find("Create variation")
+                ui.find(app.variation_label())
                     .unwrap()
                     .visible_bounds()
                     .is_some()
             );
-            ui.click("Create variation").unwrap();
+            ui.click(app.variation_label()).unwrap();
             assert!(!ui.into_messages().any(|m| matches!(m, Message::Master)));
             assert!(app.queue_master().is_err());
             let _ = app.update(Message::Edit(
@@ -1843,7 +1834,7 @@ mod tests {
                     .visible_bounds()
                     .is_some()
             );
-            ui.click("Create variation").unwrap();
+            ui.click(app.variation_label()).unwrap();
             assert!(ui.find("Show setting").is_err());
             let messages: Vec<_> = ui.into_messages().collect();
             assert!(!messages.iter().any(|m| matches!(m, Message::Master)));
@@ -2238,7 +2229,63 @@ mod tests {
     }
 
     #[test]
-    fn changes_are_visible_immediately_above_run_on_small_screens() {
+    fn inline_changes_follow_selected_settings_and_disappear_when_restored() {
+        use descriptions::Topic;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        assert_eq!(app.previous_setting(Topic::Field(Field::Loudness)), None);
+        app.queue_master().unwrap();
+        app.selected = Some((app.library.tracks[0].id, app.library.jobs[0].id));
+        app.library.draft = settings_from_config(&app.library.jobs[0].config);
+        app.library.draft.loudness = "-12".into();
+        assert_eq!(
+            app.previous_setting(Topic::Field(Field::Loudness)),
+            Some("-9".into())
+        );
+        app.library.draft.loudness = "-9.0".into();
+        assert_eq!(app.previous_setting(Topic::Field(Field::Loudness)), None);
+        app.library.draft.preserve_bass = !app.library.jobs[0].config.preserve_bass;
+        assert!(app.previous_setting(Topic::PreserveBass).is_some());
+        assert_eq!(
+            app.changed_group_label("Limiter details", false, &["Preserve bass"]),
+            "▸ Limiter details · 1 change"
+        );
+        app.library.draft.use_reference = true;
+        app.library.draft.reference_audio = "/tmp/reference.wav".into();
+        assert_eq!(
+            app.previous_setting(Topic::Field(Field::Reference)),
+            Some("Auto (no reference)".into())
+        );
+        app.library.draft = settings_from_config(&app.library.jobs[0].config);
+        assert_eq!(app.previous_setting(Topic::PreserveBass), None);
+        assert_eq!(app.previous_setting(Topic::Field(Field::Reference)), None);
+        assert_eq!(
+            app.changed_group_label("Limiter details", false, &["Preserve bass"]),
+            "▸ Limiter details"
+        );
+    }
+
+    #[test]
+    fn variation_button_counts_changes_against_selected_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        assert_eq!(app.variation_label(), "Create variation");
+        app.queue_master().unwrap();
+        app.selected = Some((app.library.tracks[0].id, app.library.jobs[0].id));
+        app.library.draft = settings_from_config(&app.library.jobs[0].config);
+        assert_eq!(app.variation_label(), "Create variation");
+        app.library.draft.loudness = "-12".into();
+        assert_eq!(app.variation_label(), "Create variation · 1 change");
+        app.library.draft.seed = "42".into();
+        assert_eq!(app.variation_label(), "Create variation · 2 changes");
+        app.library.draft.loudness = "-9.0".into();
+        assert_eq!(app.variation_label(), "Create variation · 1 change");
+        app.library.draft = settings_from_config(&app.library.jobs[0].config);
+        assert_eq!(app.variation_label(), "Create variation");
+    }
+
+    #[test]
+    fn inline_changes_and_run_are_visible_on_small_screens() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
         app.queue_master().unwrap();
@@ -2258,17 +2305,24 @@ mod tests {
             iced::Size::new(1000., 650.),
             app.view(),
         );
-        let changes = ui
-            .find(format!(
-                "▸ Changes · {}",
-                settings_differences(&app.library.jobs[0].config, &app.library.draft).len()
-            ))
-            .unwrap();
-        assert!(changes.visible_bounds().is_some());
-        let run = ui.find("Create variation").unwrap();
-        assert!(run.visible_bounds().is_some());
-        assert!(run.bounds().y > changes.bounds().y);
-        assert!(run.bounds().y - changes.bounds().y < 220.);
+        assert!(
+            ui.find("Changes from selected result")
+                .unwrap()
+                .visible_bounds()
+                .is_some()
+        );
+        assert!(
+            ui.find("• Previous: -9")
+                .unwrap()
+                .visible_bounds()
+                .is_some()
+        );
+        assert!(
+            ui.find(app.variation_label())
+                .unwrap()
+                .visible_bounds()
+                .is_some()
+        );
         assert!(ui.find("Default export directory").is_err());
         assert!(
             ui.find(format!(
@@ -2474,7 +2528,8 @@ mod tests {
                 count
             );
             for expanded in [false, true] {
-                app.show_changes = expanded;
+                app.show_limiter_details = expanded;
+                app.show_optimization = expanded;
                 for (width, height) in [(1000., 480.), (1100., 550.), (1200., 650.), (1280., 800.)]
                 {
                     let mut ui = iced_test::Simulator::with_size(
@@ -2513,7 +2568,7 @@ mod tests {
                     ui.click(Id::new("number-Loudness")).unwrap();
                     ui.typewrite("0");
                     let run = ui
-                        .find("Create variation")
+                        .find(app.variation_label())
                         .unwrap()
                         .visible_bounds()
                         .unwrap();
@@ -2594,7 +2649,7 @@ mod tests {
                     .is_some()
             );
             assert!(ui.find("Drop audio to master").unwrap().bounds().height <= 18.);
-            ui.click("Create variation").unwrap();
+            ui.click(app.variation_label()).unwrap();
             assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
         }
     }
@@ -2643,7 +2698,7 @@ mod tests {
         ui.find("Professionality2").unwrap();
         ui.find("Dissonance").unwrap();
         assert!(ui.find("Ear Damage").is_err());
-        ui.click("Create variation").unwrap();
+        ui.click(app.variation_label()).unwrap();
         assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
     }
 
@@ -2693,7 +2748,7 @@ mod tests {
         );
         ui.find("Use reference audio").unwrap();
         ui.find("Browse…").unwrap();
-        ui.click("Create variation").unwrap();
+        ui.click(app.variation_label()).unwrap();
         assert!(!ui.into_messages().any(|m| matches!(m, Message::Master)));
     }
 
