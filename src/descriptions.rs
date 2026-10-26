@@ -39,6 +39,88 @@ pub enum Topic {
 }
 
 impl App {
+    pub(super) fn changed_group_label(
+        &self,
+        label: &str,
+        expanded: bool,
+        fields: &[&str],
+    ) -> String {
+        let count = self.job().map_or(0, |job| {
+            crate::settings_differences(&job.config, &self.library.draft)
+                .iter()
+                .filter(|(label, _, _)| fields.contains(label))
+                .count()
+        });
+        let arrow = if expanded { "▾" } else { "▸" };
+        if count == 0 {
+            format!("{arrow} {label}")
+        } else {
+            format!(
+                "{arrow} {label} · {count} {}",
+                if count == 1 { "change" } else { "changes" }
+            )
+        }
+    }
+
+    pub(super) fn previous_setting(&self, topic: Topic) -> Option<String> {
+        let label = match topic {
+            Topic::ReferenceMode => "Volume reference",
+            Topic::CeilingMode => "Peak control",
+            Topic::NoiseMode => "Noise update",
+            Topic::Mastering => "Mastering",
+            Topic::PreserveBass => "Preserve bass",
+            Topic::PreCompression => "Pre-compression",
+            Topic::Solver => "Solver",
+            Topic::Format => "Format",
+            Topic::Field(field) => match field {
+                Field::Loudness => "Target",
+                Field::Ceiling => "Ceiling",
+                Field::Intensity => "Intensity",
+                Field::LowpassCut => "Lowpass peak Hz",
+                Field::LowCut => "Low cut",
+                Field::HighCut => "High cut",
+                Field::Oversample => "Oversampling",
+                Field::MaxIter1 => "Outer iterations",
+                Field::MaxIter2 => "Inner iterations",
+                Field::Evaluations => "Evaluations",
+                Field::Seed => "Seed",
+                Field::Workers => "Workers",
+                Field::SampleRate => "Sample rate",
+                Field::BitDepth => "WAV bits",
+                Field::Reference => "Reference report",
+                _ => return None,
+            },
+        };
+        let job = self.job()?;
+        let differences = crate::settings_differences(&job.config, &self.library.draft);
+        if topic == Topic::Field(Field::Reference) {
+            return differences
+                .iter()
+                .any(|(label, _, _)| {
+                    matches!(
+                        *label,
+                        "Reference report" | "Use reference audio" | "Reference audio"
+                    )
+                })
+                .then(|| self.reference_name());
+        }
+        differences
+            .into_iter()
+            .find(|(name, _, _)| *name == label)
+            .map(|(_, old, _)| match topic {
+                Topic::ReferenceMode => job.config.reference_mode.to_string(),
+                Topic::CeilingMode => job.config.ceiling_mode.to_string(),
+                Topic::NoiseMode => job.config.noise_mode.to_string(),
+                Topic::Solver => job.config.solver.to_string(),
+                Topic::Format => job.config.format.to_string(),
+                _ => match old.as_str() {
+                    "true" => "On".into(),
+                    "false" => "Off".into(),
+                    _ => old,
+                },
+            })
+    }
+
     fn help_button(&self, topic: Topic) -> Element<'_, Message> {
         let selected = self.open_help == Some(topic);
         button(text("i").size(12).align_x(iced::Center).width(Fill))
@@ -77,6 +159,19 @@ impl App {
         topic: Topic,
         control: Element<'a, Message>,
     ) -> Element<'a, Message> {
+        let control = if let Some(previous) = self.previous_setting(topic) {
+            column![
+                control,
+                text(format!("• Previous: {previous}"))
+                    .size(11)
+                    .color(theme::DISABLED_LABEL)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            ]
+            .spacing(3)
+            .into()
+        } else {
+            control
+        };
         if self.open_help != Some(topic) {
             return control;
         }

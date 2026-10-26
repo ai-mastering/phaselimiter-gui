@@ -724,13 +724,16 @@ impl App {
     fn settings_panel(&self) -> Element<'_, Message> {
         let target = self.selected.map(|k| k.0);
         let track = self.library.tracks.iter().find(|t| Some(t.id) == target);
-        let mut fields = column![self.mastering_settings_view()].spacing(8);
-        if self.show_changes
-            && let Some(job) = self.job()
-        {
-            fields = fields.push(self.run_changes_details(job));
+        let mut fields = column![].spacing(8);
+        if self.job().is_some() {
+            fields = fields.push(
+                text("Changes from selected result")
+                    .size(12)
+                    .color(theme::DISABLED_LABEL),
+            );
         }
-        let mut panel = column![
+        fields = fields.push(self.mastering_settings_view());
+        let panel = column![
             text("Mastering settings").size(15),
             scrollable(fields.padding(iced::Padding {
                 bottom: 10.,
@@ -743,9 +746,6 @@ impl App {
         ]
         .spacing(8)
         .height(Fill);
-        if let Some(job) = self.job() {
-            panel = panel.push(self.run_changes_view(job));
-        }
         let issue = self.settings_issue().or_else(|| {
             if track.is_none() {
                 Some((None, "Master new audio or select a result.".into()))
@@ -757,11 +757,11 @@ impl App {
         });
         panel
             .push(
-                button(if self.active.is_some() {
-                    "Create variation · queue next"
+                button(text(self.variation_label()).size(if self.active.is_some() {
+                    13
                 } else {
-                    "Create variation"
-                })
+                    16
+                }))
                 .on_press_maybe(issue.is_none().then_some(Message::Master))
                 .width(Fill)
                 .height(40)
@@ -770,48 +770,21 @@ impl App {
             .into()
     }
 
-    fn run_changes_view<'a>(&'a self, job: &'a Job) -> Element<'a, Message> {
-        let differences = settings_differences(&job.config, &self.library.draft);
-        if differences.is_empty() {
-            return text("No mastering parameter changes").size(12).into();
+    pub(super) fn variation_label(&self) -> String {
+        let count = self.job().map_or(0, |job| {
+            settings_differences(&job.config, &self.library.draft).len()
+        });
+        let mut label = "Create variation".to_owned();
+        if count > 0 {
+            label.push_str(&format!(
+                " · {count} {}",
+                if count == 1 { "change" } else { "changes" }
+            ));
         }
-        let count = differences.len();
-        let heading = button(
-            text(format!(
-                "{} Changes · {count}",
-                if self.show_changes { "▾" } else { "▸" }
-            ))
-            .size(13),
-        )
-        .on_press(Message::ToggleChanges)
-        .style(theme::normal);
-        heading.into()
-    }
-
-    fn run_changes_details<'a>(&'a self, job: &'a Job) -> Element<'a, Message> {
-        let differences = settings_differences(&job.config, &self.library.draft);
-        let mut changes = column![].spacing(3);
-        for (label, mut old, mut new) in differences {
-            if label == "Reference report" {
-                old = self.reference_name();
-                new = if self.library.draft.use_reference {
-                    self.library.draft.reference_audio.clone()
-                } else {
-                    "Auto (no reference)".into()
-                };
-            }
-            changes = changes.push(
-                column![
-                    text(label)
-                        .size(12)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                    compact_text(format!("From: {old}"), old, 12., true),
-                    compact_text(format!("To: {new}"), new, 12., true),
-                ]
-                .spacing(2),
-            );
+        if self.active.is_some() {
+            label.push_str(" · queue next");
         }
-        changes.into()
+        label
     }
 
     fn mastering_settings_view(&self) -> Element<'_, Message> {
@@ -864,11 +837,18 @@ impl App {
                 .size(15)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             primary,
-            button(if self.show_limiter_details {
-                "▾ Limiter details"
-            } else {
-                "▸ Limiter details"
-            })
+            button(text(self.changed_group_label(
+                "Limiter details",
+                self.show_limiter_details,
+                &[
+                    "Preserve bass",
+                    "Oversampling",
+                    "Noise update",
+                    "Outer iterations",
+                    "Inner iterations",
+                    "Pre-compression"
+                ]
+            )))
             .on_press(Message::ToggleLimiterDetails)
             .padding(4)
             .style(theme::normal),
@@ -946,11 +926,11 @@ impl App {
             )
             .push(self.help_body(Topic::Field(Field::Reference), self.reference_control()))
             .push(
-                button(if self.show_optimization {
-                    "▾ Optimization"
-                } else {
-                    "▸ Optimization"
-                })
+                button(text(self.changed_group_label(
+                    "Optimization",
+                    self.show_optimization,
+                    &["Solver", "Evaluations", "Seed"],
+                )))
                 .on_press(Message::ToggleOptimization)
                 .padding(4)
                 .style(theme::normal),
