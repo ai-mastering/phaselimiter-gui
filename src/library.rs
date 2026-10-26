@@ -240,25 +240,36 @@ impl Library {
     }
 }
 
-pub fn export(source: &Path, expected: &str, destination: &Path) -> Result<(), String> {
+pub fn export(source: &Path, expected: &str, destination: &Path) -> Result<PathBuf, String> {
     verify(source, expected)?;
     let mut input = File::open(source).map_err(|e| e.to_string())?;
-    let mut output = File::options()
-        .write(true)
-        .create_new(true)
-        .open(destination)
-        .map_err(|e| {
-            format!(
-                "Export {}: {e}. Choose a new filename; existing files are preserved.",
-                destination.display()
-            )
-        })?;
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Export {}: {e}", parent.display()))?;
+    }
+    let mut path = destination.to_path_buf();
+    let mut number = 0_u64;
+    let mut output = loop {
+        match File::options().write(true).create_new(true).open(&path) {
+            Ok(file) => break file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                number += 1;
+                let mut name = destination.file_stem().unwrap_or_default().to_os_string();
+                name.push(format!(" ({number})"));
+                if let Some(extension) = destination.extension() {
+                    name.push(".");
+                    name.push(extension);
+                }
+                path = destination.with_file_name(name);
+            }
+            Err(e) => return Err(format!("Export {}: {e}", path.display())),
+        }
+    };
     if let Err(error) = io::copy(&mut input, &mut output).and_then(|_| output.sync_all()) {
         drop(output);
-        let _ = fs::remove_file(destination);
+        let _ = fs::remove_file(&path);
         return Err(error.to_string());
     }
-    Ok(())
+    Ok(path)
 }
 
 pub fn usage(root: &Path) -> u64 {
@@ -459,6 +470,50 @@ mod tests {
     }
 
     #[test]
+    fn export_creates_destination_directory_and_preserves_extensionless_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::write(&source, b"audio").unwrap();
+        let hash = hash(&source).unwrap();
+        let destination = dir.path().join("new/nested/audio");
+        assert_eq!(export(&source, &hash, &destination).unwrap(), destination);
+        let numbered = export(&source, &hash, &destination).unwrap();
+        assert_eq!(numbered, dir.path().join("new/nested/audio (1)"));
+        assert_eq!(fs::read(numbered).unwrap(), b"audio");
+        assert!(export(&source, "wrong hash", &destination).is_err());
+        assert!(!dir.path().join("new/nested/audio (2)").exists());
+    }
+
+    #[test]
+    fn simultaneous_exports_reserve_distinct_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.wav");
+        fs::write(&source, b"audio").unwrap();
+        let hash = hash(&source).unwrap();
+        let destination = dir.path().join("export.wav");
+        let barrier = std::sync::Barrier::new(4);
+        let paths = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        export(&source, &hash, &destination).unwrap()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let unique: std::collections::HashSet<_> = paths.iter().collect();
+        assert_eq!(unique.len(), 4);
+        for path in paths {
+            assert_eq!(fs::read(path).unwrap(), b"audio");
+        }
+    }
+
+    #[test]
     fn export_never_overwrites_an_existing_file() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("result.wav");
@@ -466,7 +521,11 @@ mod tests {
         fs::write(&source, b"result").unwrap();
         let hash = hash(&source).unwrap();
         export(&source, &hash, &dest).unwrap();
-        assert!(export(&source, &hash, &dest).is_err());
-        assert_eq!(fs::read(dest).unwrap(), b"result");
+        fs::write(&dest, b"existing").unwrap();
+        fs::write(dir.path().join("export (1).wav"), b"occupied").unwrap();
+        let copy = export(&source, &hash, &dest).unwrap();
+        assert_eq!(copy, dir.path().join("export (2).wav"));
+        assert_eq!(fs::read(copy).unwrap(), b"result");
+        assert_eq!(fs::read(dest).unwrap(), b"existing");
     }
 }

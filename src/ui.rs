@@ -67,24 +67,13 @@ impl App {
             .align_y(iced::Center);
             if self.job().is_some_and(|j| j.status == Status::Succeeded) {
                 title = title.push(
-                    button("Export a copy")
-                        .on_press(Message::ToggleExport)
+                    button("Export")
+                        .on_press(Message::Export)
                         .style(theme::normal)
                         .padding(4),
                 );
             }
             center = center.push(title);
-            if self.show_export && self.job().is_some_and(|j| j.status == Status::Succeeded) {
-                center = center.push(
-                    row![
-                        text_input("Export filename", &self.export_path)
-                            .on_input(Message::ExportPath)
-                            .padding(5),
-                        button("Export").on_press(Message::Export).padding(5)
-                    ]
-                    .spacing(6),
-                );
-            }
             center = center.push(self.transport_view());
         }
         if !wide {

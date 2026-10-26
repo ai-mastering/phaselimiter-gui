@@ -107,7 +107,6 @@ enum Message {
     ShowMastering,
     ToggleLimiterDetails,
     ToggleOptimization,
-    ToggleExport,
     ToggleAppSettings,
     Compare(ComparisonChoice),
     ReferenceLoaded(PathBuf, Result<analysis::Analysis, String>),
@@ -142,8 +141,7 @@ enum Message {
     OpenLibrary,
     FolderOpened(Result<(), String>),
     Export,
-    ExportPath(String),
-    Exported(Result<(), String>),
+    Exported(Result<PathBuf, String>),
     Close,
 }
 struct Active {
@@ -166,7 +164,6 @@ struct App {
     error: Option<String>,
     notice: Option<String>,
     show_settings: bool,
-    show_export: bool,
     show_app_settings: bool,
     comparison_job: Option<Uuid>,
     reference_report: Option<(PathBuf, Result<analysis::Analysis, String>)>,
@@ -192,7 +189,6 @@ struct App {
     region: Option<(f64, f64)>,
     position: f64,
     duration: f64,
-    export_path: String,
     storage_bytes: u64,
     memo_save_at: Option<std::time::Instant>,
     diagnostics: Vec<diagnostics::Diagnostic>,
@@ -216,7 +212,6 @@ impl Default for App {
             error: None,
             notice: None,
             show_settings: false,
-            show_export: false,
             show_app_settings: false,
             comparison_job: None,
             reference_report: None,
@@ -241,7 +236,6 @@ impl Default for App {
             region: None,
             position: 0.,
             duration: 0.,
-            export_path: String::new(),
             storage_bytes: 0,
             memo_save_at: None,
             diagnostics: Vec::new(),
@@ -269,7 +263,6 @@ impl App {
                     .unwrap_or_else(|| library.selected.is_some_and(|key| key.1.is_some()));
                 app.equalize = library.equalize.unwrap_or(true);
                 app.library = library;
-                app.export_path = app.job().map(|j| app.default_export(j)).unwrap_or_default();
                 app.root = Some(root);
                 for t in &app.library.tracks {
                     if t.analysis.is_none() && t.analysis_error.is_none() {
@@ -560,12 +553,6 @@ impl App {
                 }
                 self.numeric_errors.remove(&field);
                 *self.field_mut(field) = value;
-                if matches!(field, Field::ExportDir) {
-                    self.export_path = self
-                        .job()
-                        .map(|j| self.default_export(j))
-                        .unwrap_or_default();
-                }
                 save = true;
             }
             Message::Adjust(field, up) => {
@@ -768,7 +755,6 @@ impl App {
                 self.show_settings = true;
                 self.show_app_settings = false;
             }
-            Message::ToggleExport => self.show_export = !self.show_export,
             Message::ShowAnalysis => {
                 self.show_settings = false;
                 self.show_app_settings = false;
@@ -847,14 +833,9 @@ impl App {
                     self.numeric_errors.clear();
                     self.invalidate_draft_reference(true);
                 }
-                self.show_export = false;
                 self.output_side = key.1.is_some();
                 self.error = None;
                 self.notice = None;
-                self.export_path = self
-                    .job()
-                    .map(|j| self.default_export(j))
-                    .unwrap_or_default();
                 tasks.push(self.prepare());
                 tasks.push(self.load_reference());
                 save = true;
@@ -1177,13 +1158,13 @@ impl App {
                     self.error = Some(e);
                 }
             }
-            Message::ExportPath(path) => self.export_path = path,
             Message::Export => {
                 if let Some(job) = self.job()
+                    && job.status == Status::Succeeded
                     && let Some(hash) = job.output_hash.clone()
                 {
                     let source = job.output.clone();
-                    let dest = PathBuf::from(&self.export_path);
+                    let dest = PathBuf::from(self.default_export(job));
                     tasks.push(Task::perform(
                         async move {
                             tokio::task::spawn_blocking(move || {
@@ -1197,7 +1178,7 @@ impl App {
                 }
             }
             Message::Exported(result) => match result {
-                Ok(()) => self.notice = Some("Exported. The stored result is unchanged.".into()),
+                Ok(path) => self.notice = Some(format!("Exported to {}", path.display())),
                 Err(e) => self.error = Some(e),
             },
             Message::Close => {
@@ -1256,7 +1237,7 @@ impl App {
                     || "undated".into(),
                     |t| t
                         .with_timezone(&chrono::Local)
-                        .format("%Y%m%d_%H%M%S%.9f")
+                        .format("%Y%m%d_%H%M%S")
                         .to_string()
                 ),
                 job.config.format.extension()
@@ -1766,13 +1747,28 @@ mod tests {
         let mut app = app_with_track(dir.path());
         app.queue_master().unwrap();
         app.running = false;
+        let job = &app.library.jobs[0];
+        let timestamp = job
+            .created_at
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%Y%m%d_%H%M%S")
+            .to_string();
+        let filename = app.default_export(job);
+        assert!(filename.ends_with(&format!(
+            "_master_{timestamp}.{}",
+            job.config.format.extension()
+        )));
         let destination = dir.path().join("missing export directory");
         app.library.app_settings.export_dir = destination.display().to_string();
         let _ = app.update(Message::Select((
             Uuid::from_u128(0),
             Some(app.library.jobs[0].id),
         )));
-        assert!(std::path::Path::new(&app.export_path).starts_with(&destination));
+        assert!(
+            std::path::Path::new(&app.default_export(&app.library.jobs[0]))
+                .starts_with(&destination)
+        );
         let _ = app.update(Message::Select((
             app.library.jobs[0].track_id,
             Some(app.library.jobs[0].id),
@@ -1786,12 +1782,18 @@ mod tests {
             Field::ExportDir,
             new_destination.display().to_string(),
         ));
-        assert!(std::path::Path::new(&app.export_path).starts_with(&new_destination));
+        assert!(
+            std::path::Path::new(&app.default_export(&app.library.jobs[0]))
+                .starts_with(&new_destination)
+        );
         let _ = app.update(Message::Select((
             Uuid::from_u128(0),
             Some(app.library.jobs[1].id),
         )));
-        assert!(std::path::Path::new(&app.export_path).starts_with(new_destination));
+        assert!(
+            std::path::Path::new(&app.default_export(&app.library.jobs[0]))
+                .starts_with(new_destination)
+        );
         let saved = serde_json::to_value(&app.library).unwrap();
         assert!(saved["draft"].get("output_dir").is_none());
         assert!(saved["jobs"][0]["config"].get("output_dir").is_none());
@@ -2189,7 +2191,7 @@ mod tests {
         let output = app.library.jobs[0].output.clone();
         let config = serde_json::to_value(&app.library.jobs[0].config).unwrap();
         let _ = app.update(Message::Select((Uuid::nil(), Some(id))));
-        let export = app.export_path.clone();
+        let export = app.default_export(&app.library.jobs[0]);
         for memo in ["低域", "低域控えめ", "今のところこれが良い"] {
             let _ = app.update(Message::EditMemo(id, memo.into()));
         }
@@ -2203,7 +2205,7 @@ mod tests {
         assert_eq!(saved.jobs[0].output, output);
         assert_eq!(serde_json::to_value(&saved.jobs[0].config).unwrap(), config);
         assert_eq!(saved.jobs[0].status, Status::Waiting);
-        assert_eq!(app.export_path, export);
+        assert_eq!(app.default_export(&app.library.jobs[0]), export);
         assert_eq!(app.selected, Some((Uuid::nil(), Some(id))));
         assert_eq!(saved.jobs.len(), 1);
         assert_eq!(id.get_version(), Some(uuid::Version::Random));
