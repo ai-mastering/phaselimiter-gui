@@ -515,12 +515,7 @@ impl App {
             }
             table = table.push(values);
         }
-        detail = detail
-            .push(scrollable(table).horizontal().spacing(4).width(Fill))
-            .push(
-            text("* YouTube compensation: website estimate (−10.3 reference). Missing values: —.")
-                .size(11).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-        );
+        detail = detail.push(scrollable(table).horizontal().spacing(4).width(Fill));
         if track.analysis.as_ref().is_some_and(|a| {
             a.number("sound_quality").is_none() && a.sound_quality_error().is_none()
         }) {

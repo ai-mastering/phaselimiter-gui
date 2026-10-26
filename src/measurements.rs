@@ -55,13 +55,7 @@ pub const ALL: &[Metric] = &[
         1.
     ),
     metric!("YouTube loudness", "youtube_loudness", " LUFS", 1, 1.),
-    metric!(
-        "YouTube compensation*",
-        "youtube_compensation",
-        " dB",
-        1,
-        1.
-    ),
+    metric!("YouTube compensation", "youtube_compensation", " dB", 1, 1.),
     metric!("Micro dynamics", "sharpness", " dB", 1, 1.),
     metric!("Space", "space", " dB", 1, 1.),
     metric!("Acoustic entropy", "acoustic_entropy", " bit", 0, 1.),
