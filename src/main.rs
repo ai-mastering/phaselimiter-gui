@@ -88,6 +88,9 @@ enum Message {
     NumberFocused(Field, String, bool),
     Input(String),
     AddInput,
+    BrowseAudio,
+    AudioPicked(Option<Vec<PathBuf>>),
+    ToggleAudioPath,
     FileDropped(PathBuf),
     Hover(bool),
     Imported(Result<Track, String>),
@@ -158,6 +161,7 @@ struct App {
     save_worker: Option<library::SaveWorker>,
     _library_lock: Option<std::fs::File>,
     input: String,
+    show_audio_path: bool,
     selected: Option<AudioKey>,
     active: Option<Active>,
     running: bool,
@@ -208,6 +212,7 @@ impl Default for App {
             save_worker: None,
             _library_lock: None,
             input: String::new(),
+            show_audio_path: false,
             selected: None,
             active: None,
             running: false,
@@ -299,6 +304,13 @@ impl App {
         app.refresh_diagnostics();
         (app, Task::batch([task, analysis, storage, reference]))
     }
+    fn library_folder(&self) -> Result<PathBuf, String> {
+        self.root
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(library::default_root)
+    }
+
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             iced::event::listen_with(|event, _, _| match event {
@@ -608,6 +620,29 @@ impl App {
                 ));
             }
             Message::Input(value) => self.input = value,
+            Message::ToggleAudioPath => self.show_audio_path = !self.show_audio_path,
+            Message::BrowseAudio => tasks.push(Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Choose audio files")
+                        .pick_files()
+                        .await
+                        .map(|files| {
+                            files
+                                .into_iter()
+                                .map(|file| file.path().to_path_buf())
+                                .collect()
+                        })
+                },
+                Message::AudioPicked,
+            )),
+            Message::AudioPicked(paths) => {
+                if let Some(paths) = paths {
+                    for path in paths {
+                        tasks.push(self.import(path));
+                    }
+                }
+            }
             Message::AddInput => {
                 if !self.input.is_empty() {
                     let path = PathBuf::from(std::mem::take(&mut self.input));
@@ -1164,14 +1199,13 @@ impl App {
             Message::Graph(kind) => self.graph = kind,
             Message::Details => self.show_details = !self.show_details,
             Message::StorageSize(bytes) => self.storage_bytes = bytes,
-            Message::OpenLibrary => {
-                if let Some(root) = &self.root {
-                    tasks.push(Task::perform(
-                        library::open_folder(root.clone()),
-                        Message::FolderOpened,
-                    ));
-                }
-            }
+            Message::OpenLibrary => match self.library_folder() {
+                Ok(root) => tasks.push(Task::perform(
+                    library::open_folder(root),
+                    Message::FolderOpened,
+                )),
+                Err(error) => self.error = Some(error),
+            },
             Message::FolderOpened(result) => {
                 if let Err(e) = result {
                     self.error = Some(e);
@@ -1369,6 +1403,64 @@ fn settings_from_config(c: &model::Config) -> Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn library_folder_remains_available_without_enabling_writes_after_load_failure() {
+        let mut app = App {
+            error: Some("Cannot read saved library".into()),
+            ..App::default()
+        };
+        assert_eq!(
+            app.library_folder().unwrap(),
+            library::default_root().unwrap()
+        );
+        let _ = app.update(Message::OpenLibrary);
+        assert!(app.root.is_none());
+        assert!(app.save_worker.is_none());
+        assert!(app._library_lock.is_none());
+        assert_eq!(app.error.as_deref(), Some("Cannot read saved library"));
+    }
+
+    #[test]
+    fn library_folder_uses_the_loaded_library_location() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App {
+            root: Some(dir.path().to_path_buf()),
+            ..App::default()
+        };
+        assert_eq!(app.library_folder().unwrap(), dir.path());
+    }
+
+    #[test]
+    fn audio_picker_cancel_preserves_state_and_multiple_files_start_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App {
+            root: Some(dir.path().to_path_buf()),
+            input: "pending path.wav".into(),
+            ..App::default()
+        };
+        let _ = app.update(Message::AudioPicked(None));
+        assert_eq!(app.importing, 0);
+        assert_eq!(app.input, "pending path.wav");
+        let _ = app.update(Message::AudioPicked(Some(vec![
+            dir.path().join("first.wav"),
+            dir.path().join("second.wav"),
+        ])));
+        assert_eq!(app.importing, 2);
+        assert_eq!(app.input, "pending path.wav");
+    }
+
+    #[test]
+    fn audio_path_input_is_optional() {
+        let mut app = App::default();
+        assert!(!app.show_audio_path);
+        let _ = app.update(Message::ToggleAudioPath);
+        assert!(app.show_audio_path);
+        app.input = "pending.wav".into();
+        let _ = app.update(Message::ToggleAudioPath);
+        assert!(!app.show_audio_path);
+        assert_eq!(app.input, "pending.wav");
+    }
+
     fn app_with_track(dir: &std::path::Path) -> App {
         let source = dir.join("日本語 mix.wav");
         std::fs::write(&source, b"original audio").unwrap();

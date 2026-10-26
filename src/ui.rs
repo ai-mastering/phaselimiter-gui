@@ -17,17 +17,22 @@ impl App {
             .align_y(iced::Center);
         header = header
             .push(
-                text_input("Drop audio or paste a file path", &self.input)
-                    .on_input(Message::Input)
-                    .on_submit(Message::AddInput)
-                    .padding(6),
-            )
-            .push(
-                button("Add audio")
-                    .on_press(Message::AddInput)
+                button("Add audio…")
+                    .on_press(Message::BrowseAudio)
                     .style(theme::normal)
                     .padding(6),
             )
+            .push(
+                button(if self.show_audio_path {
+                    "Hide path input"
+                } else {
+                    "Add from path…"
+                })
+                .on_press(Message::ToggleAudioPath)
+                .style(theme::normal)
+                .padding(6),
+            )
+            .push(iced::widget::Space::new().width(Fill))
             .push(
                 button("App settings")
                     .on_press(Message::ToggleAppSettings)
@@ -35,6 +40,21 @@ impl App {
                     .padding(6),
             );
         let mut body = column![header].spacing(8);
+        if self.show_audio_path {
+            body = body.push(
+                row![
+                    text_input("Paste an audio file path", &self.input)
+                        .on_input(Message::Input)
+                        .on_submit(Message::AddInput)
+                        .padding(6),
+                    button("Add")
+                        .on_press_maybe((!self.input.is_empty()).then_some(Message::AddInput))
+                        .style(theme::normal)
+                        .padding(6),
+                ]
+                .spacing(6),
+            );
+        }
         if self.hovering {
             body = body.push(text("Release to import audio.").size(13));
         }
@@ -904,8 +924,7 @@ impl App {
             ))
             .size(14),
             text(
-                self.root
-                    .as_ref()
+                self.library_folder()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default()
             )
