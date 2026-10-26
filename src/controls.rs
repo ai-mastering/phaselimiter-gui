@@ -1,4 +1,5 @@
 //! Shared settings controls and numeric editing contracts. No custom widgets.
+use crate::text_fields::input as text_input;
 use crate::{
     App, Element, Field, Message,
     model::{self, CeilingMode, Format, ReferenceMode, Settings},
@@ -6,7 +7,7 @@ use crate::{
 };
 use iced::{
     Fill,
-    widget::{button, column, opaque, pick_list, row, slider, space, stack, text, text_input},
+    widget::{button, column, opaque, pick_list, row, slider, space, stack, text},
 };
 
 #[derive(Clone, Copy, Debug)]

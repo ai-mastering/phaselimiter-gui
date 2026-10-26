@@ -18,12 +18,12 @@ impl App {
                 .comparison_job()
                 .and_then(|job| job.analysis_error.as_ref())
             {
-                errors.push(format!("Compare A analysis: {error}"));
+                errors.push(format!("Source A analysis: {error}"));
             }
             for (label, report) in [
                 ("Original", track.analysis.as_ref()),
                 (
-                    "Compare A",
+                    "Source A",
                     self.comparison_job().and_then(|j| j.analysis.as_ref()),
                 ),
                 ("Selected", self.job().and_then(|j| j.analysis.as_ref())),

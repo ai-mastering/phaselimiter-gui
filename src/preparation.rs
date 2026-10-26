@@ -50,10 +50,13 @@ impl Cache {
 
 impl App {
     pub(super) fn listening_key(&self) -> Option<AudioKey> {
+        self.side_key(self.output_side)
+    }
+    pub(super) fn side_key(&self, output: bool) -> Option<AudioKey> {
         let (track, job) = self.selected?;
         Some((
             track,
-            if self.output_side {
+            if output {
                 Some(job)
             } else {
                 self.comparison_job().map(|j| j.id)
@@ -106,9 +109,15 @@ impl App {
                 self.active_key = self.listening_key();
                 self.loading = false;
                 self.player.region(self.region);
+                if std::mem::take(&mut self.play_when_ready)
+                    && let Err(error) = self.player.play()
+                {
+                    self.error = Some(error);
+                }
             }
             Err(error) => {
                 self.loading = false;
+                self.play_when_ready = false;
                 self.error = Some(error);
             }
         }
@@ -161,9 +170,11 @@ impl App {
     pub(super) fn prepare(&mut self) -> Task<Message> {
         self.loading = false;
         let Some(key) = self.listening_key() else {
+            self.play_when_ready = false;
             return Task::none();
         };
         let Some((path, hash)) = self.audio(key) else {
+            self.play_when_ready = false;
             self.notice =
                 Some("Selected result is not ready. Current playback is unchanged.".into());
             return Task::none();
@@ -207,6 +218,7 @@ impl App {
             Err(error) => {
                 if wanted {
                     self.loading = false;
+                    self.play_when_ready = false;
                     self.error = Some(error);
                 }
             }
