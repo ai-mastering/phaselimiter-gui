@@ -128,6 +128,9 @@ async fn execute(
     cancel: Arc<AtomicBool>,
     sender: &mut iced::futures::channel::mpsc::Sender<Update>,
 ) -> Update {
+    if let Err(error) = job.tools.validate() {
+        return Update::Finished(Err(error));
+    }
     if job.output.exists() {
         return Update::Finished(Err(format!(
             "Output already exists; refusing to overwrite: {}",
@@ -370,6 +373,25 @@ mod tests {
                 .iter()
                 .any(|update| matches!(update, Update::Line(value) if value == &line))
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_relative_tool_paths_before_starting_the_backend() {
+        use iced::futures::StreamExt;
+        let dir = tempfile::tempdir().unwrap();
+        for field in ["backend", "ffmpeg", "cache"] {
+            let mut job = fake_job("exit 0", dir.path());
+            match field {
+                "backend" => job.tools.backend = "phase_limiter".into(),
+                "ffmpeg" => job.tools.ffmpeg = "ffmpeg".into(),
+                _ => job.tools.cache = "resource/cache".into(),
+            }
+            let updates: Vec<_> = run(job, Arc::new(AtomicBool::new(false))).collect().await;
+            assert!(
+                matches!(updates.as_slice(), [Update::Finished(Err(error))] if error.contains("absolute path"))
+            );
+        }
     }
 
     #[cfg(unix)]

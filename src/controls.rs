@@ -191,6 +191,9 @@ impl App {
             };
             return Some((Some(field), reason));
         }
+        if let Err(error) = self.library.app_settings.resolved_tools().validate() {
+            return Some((None, error));
+        }
         if !self.reference_ready() {
             let reason = if self.library.draft.reference_audio.is_empty() {
                 "Choose a reference audio file.".into()

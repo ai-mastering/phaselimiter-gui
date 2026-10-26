@@ -170,7 +170,7 @@ impl App {
         };
         let mut content = column![
             text("Engine & resources").size(15),
-            text("Blank paths use the bundled tools.").size(12),
+            text("Blank paths use the bundled tools. Otherwise, enter an absolute path.").size(12),
             button("Clear paths / use bundled tools")
                 .on_press(Message::Preferences(Event::UseBundledTools))
                 .style(theme::normal),
@@ -180,7 +180,7 @@ impl App {
                 &dialog.draft.backend
             ),
             self.preference_path(
-                "FFmpeg executable / PATH name",
+                "FFmpeg executable (absolute path)",
                 Field::Ffmpeg,
                 &dialog.draft.ffmpeg
             ),

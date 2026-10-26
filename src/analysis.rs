@@ -291,6 +291,10 @@ pub async fn run_with_options(
     cache: PathBuf,
     options: Options,
 ) -> Result<Analysis, String> {
+    crate::model::validate_tool_path(&backend, "phase_limiter")?;
+    crate::model::validate_tool_path(Path::new(&ffmpeg), "FFmpeg")?;
+    crate::model::validate_tool_path(&cache, "Sound-quality cache")?;
+    let ffmpeg = PathBuf::from(ffmpeg);
     let checked = input.clone();
     let checked_hash = expected.clone();
     tokio::task::spawn_blocking(move || crate::library::verify(&checked, &checked_hash))
@@ -338,22 +342,13 @@ pub async fn run_with_options(
     }
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     // The analyzer accepts WAV/WAVEX, not arbitrary FFmpeg-supported inputs.
+    // Use FFmpeg's automatic stream selection, matching playback and mastering.
     let normalized = scratch.path().join("input.wav");
     let mut normalize = tokio::process::Command::new(&ffmpeg);
     normalize
         .args(["-nostdin", "-v", "error", "-i"])
         .arg(&input)
-        .args([
-            "-map",
-            "0:a:0",
-            "-vn",
-            "-ac",
-            "2",
-            "-c:a",
-            "pcm_f32le",
-            "-f",
-            "wav",
-        ])
+        .args(["-vn", "-ac", "2", "-c:a", "pcm_f32le", "-f", "wav"])
         .arg(&normalized)
         .kill_on_drop(true);
     #[cfg(windows)]
@@ -616,9 +611,10 @@ mod tests {
             b"fake compressed audio",
         )
         .unwrap();
+        // Explicit stream mapping would diverge from playback and mastering.
         write_executable(
             &dir.path().join("fake ffmpeg"),
-            "#!/bin/sh\nfor arg do dest=\"$arg\"; done\nprintf normalized > \"$dest\"\n",
+            "#!/bin/sh\nfor arg do\n case \"$arg\" in -map|-map=*) exit 8;; esac\n dest=\"$arg\"\ndone\nprintf normalized > \"$dest\"\n",
         );
         let engine = dir.path().join("engine 日本語");
         std::fs::create_dir_all(engine.join("bin")).unwrap();
@@ -676,6 +672,31 @@ printf '{"loudness":-10,"sound_quality":0.11,"sound_quality2":0.88,"bands_short"
         )
         .await
         .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn analysis_rejects_path_names_before_starting_tools() {
+        let dir = analysis_fixture();
+        let input = dir.path().join("日本語 input.mp3");
+        for ffmpeg in ["ffmpeg", "./fake ffmpeg"] {
+            let result = run_with_options(
+                dir.path().to_path_buf(),
+                input.clone(),
+                library_hash(&input),
+                dir.path().join("engine 日本語/bin/phase_limiter"),
+                ffmpeg.into(),
+                dir.path().join("cache"),
+                Options::REFERENCE,
+            )
+            .await;
+            assert!(result.unwrap_err().contains("FFmpeg: use an absolute path"));
+        }
+        assert!(
+            !dir.path()
+                .join("engine 日本語/bin/audio_analyzer.calls")
+                .exists()
+        );
     }
 
     #[cfg(unix)]

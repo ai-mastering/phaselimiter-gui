@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import zipfile
 
-from audio_common import digest, download, extract_tar
+from audio_common import Build, digest, download, extract_tar
 import bundle_runtime
 from bundle_runtime import audit, collect
 
@@ -34,6 +34,38 @@ class Sources(unittest.TestCase):
             result.write_bytes(b'corrupted cache')
             with self.assertRaisesRegex(ValueError, 'SHA-256 mismatch'):
                 download(asset, cache)
+
+    def test_source_update_replaces_previously_extracted_contents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets = []
+            for version in (1, 2):
+                source = root / f'library-{version}.tar.gz'
+                with tarfile.open(source, 'w:gz') as archive:
+                    contents = f'version {version}'.encode()
+                    item = tarfile.TarInfo('library/README')
+                    item.size = len(contents)
+                    archive.addfile(item, io.BytesIO(contents))
+                assets.append({'filename': source.name, 'url': source.as_uri(),
+                               'sha256': digest(source)})
+            pins = {'sources': {'library': assets[0]}}
+            build = Build(root / 'work', 1)
+            with patch('audio_common.PINS', pins):
+                first = build.source('library')
+                self.assertEqual((first / 'README').read_text(), 'version 1')
+                (first / 'local-build-artifact').write_text('keep while source is unchanged')
+                self.assertEqual(build.source('library'), first)
+                self.assertTrue((first / 'local-build-artifact').exists())
+                pins['sources']['library'] = assets[1]
+                updated = build.source('library')
+                self.assertEqual((updated / 'README').read_text(), 'version 2')
+                self.assertFalse((updated / 'local-build-artifact').exists())
+                # Old markers recorded only the root path, without a source fingerprint.
+                marker = build.sources / 'library/.extracted'
+                marker.write_text(str(updated.relative_to(marker.parent)))
+                (updated / 'README').write_text('legacy extraction')
+                rebuilt = build.source('library')
+                self.assertEqual((rebuilt / 'README').read_text(), 'version 2')
 
     def test_extract_rejects_traversal_and_escape_links(self):
         for name, link in [('../escape', None), ('/escape', None), ('safe/link', '../../escape')]:

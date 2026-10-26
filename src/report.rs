@@ -155,6 +155,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn comparison_analysis_errors_are_visible_copyable_and_selectable() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("input.wav");
+        std::fs::write(&source, b"audio").unwrap();
+        let track = crate::library::import(dir.path(), source, uuid::Uuid::nil()).unwrap();
+        let mut app = App::default();
+        for id in [1, 2] {
+            let mut job = crate::model::test_job(
+                track.input.clone(),
+                dir.path().join(format!("output-{id}.wav")),
+                app.library.draft.parse().unwrap(),
+                id,
+            );
+            job.status = crate::Status::Succeeded;
+            app.library.jobs.push(job);
+        }
+        app.library.tracks.push(track);
+        app.selected = Some((uuid::Uuid::nil(), Some(uuid::Uuid::from_u128(1))));
+        app.comparison_job = Some(uuid::Uuid::from_u128(2));
+        app.library.jobs[1].analysis_error = Some("Saved comparison report is missing".into());
+        let error = "Compare A analysis: Saved comparison report is missing";
+        assert!(app.status_messages().iter().any(|m| m == error));
+        let _ = app.update_report(Event::Open);
+        let snapshot = app.report.as_ref().unwrap().content.text();
+        let value: Value = serde_json::from_str(&snapshot).unwrap();
+        assert!(
+            value["status_messages"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(error))
+        );
+        let mut ui = iced_test::Simulator::with_size(
+            Default::default(),
+            iced::Size::new(720., 520.),
+            app.report_view(),
+        );
+        ui.click("Copy report").unwrap();
+        assert!(
+            ui.into_messages()
+                .any(|m| matches!(m, Message::CopyText(text) if text == snapshot))
+        );
+        let _ = app.update_report(Event::Select(text_editor::Action::SelectAll));
+        let _ = app.update(Message::Tick);
+        assert_eq!(
+            app.report.as_ref().unwrap().content.selection().as_deref(),
+            Some(snapshot.as_str())
+        );
+    }
+
+    #[test]
     fn snapshot_is_read_only_copyable_and_refreshes_only_on_request() {
         let error = format!("Import failed\n{}\nlast line", "日本語 path/".repeat(200));
         let mut app = App {

@@ -186,6 +186,23 @@ pub struct ExecutionTools {
     pub cache: PathBuf,
 }
 
+pub fn validate_tool_path(path: &Path, label: &str) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err(format!(
+            "{label}: use an absolute path, or clear the setting to use the bundled tool."
+        ));
+    }
+    Ok(())
+}
+
+impl ExecutionTools {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_tool_path(&self.backend, "phase_limiter")?;
+        validate_tool_path(Path::new(&self.ffmpeg), "FFmpeg")?;
+        validate_tool_path(&self.cache, "Sound-quality cache")
+    }
+}
+
 impl AppSettings {
     pub fn backend_path(&self) -> PathBuf {
         if self.backend.trim().is_empty() {
@@ -635,25 +652,45 @@ mod tests {
     }
 
     #[test]
-    fn explicit_tool_overrides_are_used_even_when_the_files_do_not_exist() {
-        let mut settings = AppSettings {
-            backend: "missing custom engine".into(),
-            ffmpeg: "ffmpeg".into(),
-            cache: "custom cache".into(),
+    fn explicit_absolute_tool_overrides_are_used_even_when_files_do_not_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = AppSettings {
+            backend: dir
+                .path()
+                .join("missing custom engine")
+                .display()
+                .to_string(),
+            ffmpeg: dir.path().join("missing ffmpeg").display().to_string(),
+            cache: dir.path().join("missing cache").display().to_string(),
             ..AppSettings::default()
         };
-        assert_eq!(
-            settings.backend_path(),
-            PathBuf::from("missing custom engine")
-        );
-        assert_eq!(settings.ffmpeg_command(), "ffmpeg");
-        assert_eq!(settings.cache_path(), PathBuf::from("custom cache"));
-        settings.ffmpeg.clear();
-        assert_eq!(
-            settings.backend_path(),
-            PathBuf::from("missing custom engine")
-        );
-        assert!(Path::new(&settings.ffmpeg_command()).starts_with(bundled_root()));
+        let tools = settings.resolved_tools();
+        tools.validate().unwrap();
+        assert_eq!(tools.backend, Path::new(&settings.backend));
+        assert_eq!(tools.ffmpeg, settings.ffmpeg);
+        assert_eq!(tools.cache, Path::new(&settings.cache));
+    }
+
+    #[test]
+    fn tool_paths_reject_names_and_relative_paths_and_accept_bundled_defaults() {
+        AppSettings::default().resolved_tools().validate().unwrap();
+        for value in ["ffmpeg", "./ffmpeg", "../tools/ffmpeg"] {
+            for field in ["backend", "ffmpeg", "cache"] {
+                let mut settings = AppSettings::default();
+                match field {
+                    "backend" => settings.backend = value.into(),
+                    "ffmpeg" => settings.ffmpeg = value.into(),
+                    _ => settings.cache = value.into(),
+                }
+                assert!(
+                    settings
+                        .resolved_tools()
+                        .validate()
+                        .unwrap_err()
+                        .contains("absolute path")
+                );
+            }
+        }
     }
 
     #[test]

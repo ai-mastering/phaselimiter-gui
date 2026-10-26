@@ -14,6 +14,12 @@ impl App {
             if let Some(error) = self.job().and_then(|job| job.analysis_error.as_ref()) {
                 errors.push(format!("Selected analysis: {error}"));
             }
+            if let Some(error) = self
+                .comparison_job()
+                .and_then(|job| job.analysis_error.as_ref())
+            {
+                errors.push(format!("Compare A analysis: {error}"));
+            }
             for (label, report) in [
                 ("Original", track.analysis.as_ref()),
                 (

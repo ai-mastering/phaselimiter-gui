@@ -7,29 +7,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn executable_path(command: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(command);
-    if path.components().count() > 1 || path.is_absolute() {
-        return Ok(path);
-    }
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|dir| dir.join(command))
-        .flat_map(|path| {
-            #[cfg(windows)]
-            {
-                vec![path.clone(), path.with_extension("exe")]
-            }
-            #[cfg(not(windows))]
-            {
-                vec![path]
-            }
-        })
-        .find(|p| p.is_file())
-        .ok_or_else(|| format!("Cannot locate {command}"))
-}
-
 fn detector_reference(recorded: &str, preparation: &Path) -> Result<PathBuf, String> {
     let portable = recorded.replace('\\', "/");
     let path = PathBuf::from(&portable);
@@ -56,16 +33,16 @@ fn detector_reference(recorded: &str, preparation: &Path) -> Result<PathBuf, Str
 pub fn entry(
     input_hash: &str,
     backend: &Path,
-    ffmpeg: &str,
+    ffmpeg: &Path,
     quality_cache: &Path,
     options: &analysis::Options,
 ) -> Result<PathBuf, String> {
     let mut recipe = json!({
-        "revision": 1,
+        "revision": 2,
         "input": input_hash,
         "analyzer": library::hash(&analysis::executable(backend))?,
-        "ffmpeg": library::hash(&executable_path(ffmpeg)?)?,
-        "decode": ["-map", "0:a:0", "-vn", "-ac", "2", "-c:a", "pcm_f32le", "-f", "wav"],
+        "ffmpeg": library::hash(ffmpeg)?,
+        "decode": [ "-vn", "-ac", "2", "-c:a", "pcm_f32le", "-f", "wav"],
         "analyze": {"drr":true,"sound_quality":false,"sound_quality2":options.sound_quality2,
                     "analysis_for_visualization":true},
         "detect2": options.detect2,
@@ -166,7 +143,7 @@ mod tests {
             entry(
                 "source-hash",
                 &self.backend,
-                self.ffmpeg.to_str().unwrap(),
+                &self.ffmpeg,
                 &self.cache,
                 options,
             )
@@ -218,7 +195,7 @@ mod tests {
             entry(
                 "different-source",
                 &fixture.backend,
-                fixture.ffmpeg.to_str().unwrap(),
+                &fixture.ffmpeg,
                 &fixture.cache,
                 &reference
             )
@@ -235,7 +212,7 @@ mod tests {
             entry(
                 "source",
                 &fixture.backend,
-                fixture.ffmpeg.to_str().unwrap(),
+                &fixture.ffmpeg,
                 &fixture.cache,
                 &analysis::Options::REFERENCE
             )
@@ -245,7 +222,7 @@ mod tests {
             entry(
                 "source",
                 &fixture.backend,
-                fixture.ffmpeg.to_str().unwrap(),
+                &fixture.ffmpeg,
                 &fixture.cache,
                 &analysis::Options::FULL
             )

@@ -816,6 +816,8 @@ impl App {
                 self.comparison_job = choice.job;
                 if !self.output_side {
                     tasks.push(self.prepare());
+                } else {
+                    self.update_gain();
                 }
                 save = true;
             }
@@ -902,6 +904,10 @@ impl App {
                     self.error =
                         Some("Cancel the active mastering before removing this audio.".into());
                 } else {
+                    let previous_library = self.library.clone();
+                    let previous_selected = self.selected;
+                    let previous_comparison = self.comparison_job;
+                    let previous_memo_save_at = self.memo_save_at;
                     let removed_jobs: Vec<_> = self
                         .library
                         .jobs
@@ -919,7 +925,6 @@ impl App {
                         self.library.jobs.retain(|j| j.id != id);
                         if self.comparison_job == Some(id) {
                             self.comparison_job = None;
-                            tasks.push(self.prepare());
                         }
                     } else {
                         self.library.jobs.retain(|j| j.track_id != key.0);
@@ -930,14 +935,22 @@ impl App {
                         .is_some_and(|s| s == key || (key.1.is_none() && s.0 == key.0))
                     {
                         self.selected = None;
+                    }
+                    // Commit the manifest before changing playback or removing files.
+                    if !self.save_sync() {
+                        self.library = previous_library;
+                        self.selected = previous_selected;
+                        self.comparison_job = previous_comparison;
+                        self.memo_save_at = previous_memo_save_at;
+                        return Task::none();
+                    }
+                    if self.selected != previous_selected {
                         self.player.pause();
                         self.loaded = false;
                         self.active_key = None;
                         self.loading = false;
-                    }
-                    // Save the manifest before removing the owned files.
-                    if !self.save_sync() {
-                        return Task::none();
+                    } else if self.comparison_job != previous_comparison {
+                        tasks.push(self.prepare());
                     }
                     if let Some(root) = &self.root {
                         for id in removed_jobs {
@@ -1081,9 +1094,11 @@ impl App {
                 tasks.push(self.load_reference());
                 if let Some((id, job)) = self.selected {
                     for key in [(id, None), (id, job)] {
-                        if !self.analysis_queue.contains(&key) && self.analyzing != Some(key) {
+                        if self.analyzing != Some(key) {
                             self.force_analysis.insert(key);
-                            self.analysis_queue.push_back(key);
+                            if !self.analysis_queue.contains(&key) {
+                                self.analysis_queue.push_back(key);
+                            }
                         }
                     }
                 }
@@ -1433,6 +1448,126 @@ mod tests {
         app
     }
     #[test]
+    fn failed_removal_preserves_history_selection_and_playback_state() {
+        for background_save in [false, true] {
+            for remove in [None, Some(Uuid::from_u128(1)), Some(Uuid::from_u128(2))] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut app = app_with_track(dir.path());
+                let track_id = app.selected.unwrap().0;
+                let input = app.library.tracks[0].input.clone();
+                for id in [1, 2] {
+                    let mut job = model::test_job(
+                        input.clone(),
+                        dir.path().join(format!("result-{id}.wav")),
+                        app.library.draft.parse().unwrap(),
+                        id,
+                    );
+                    job.track_id = track_id;
+                    job.status = Status::Succeeded;
+                    std::fs::write(&job.output, b"result").unwrap();
+                    job.output_hash = Some(library::hash(&job.output).unwrap());
+                    app.library.jobs.push(job);
+                }
+                app.selected = Some((track_id, Some(Uuid::from_u128(1))));
+                app.comparison_job = Some(Uuid::from_u128(2));
+                app.loaded = true;
+                app.active_key = app.listening_key();
+                let active_key = app.active_key;
+                assert!(app.save_sync());
+                let manifest = std::fs::read(dir.path().join("library.json")).unwrap();
+                let blocked = dir.path().join("blocked");
+                std::fs::write(&blocked, b"not a directory").unwrap();
+                app.root = Some(blocked.clone());
+                if background_save {
+                    app.save_worker = Some(library::SaveWorker::new(blocked).unwrap());
+                }
+                let _ = app.update(Message::Remove((track_id, remove)));
+                assert!(
+                    app.error
+                        .as_ref()
+                        .unwrap()
+                        .contains("Could not save history")
+                );
+                assert_eq!(
+                    serde_json::to_value(&app.library).unwrap(),
+                    serde_json::from_slice::<serde_json::Value>(&manifest).unwrap()
+                );
+                assert_eq!(app.selected, Some((track_id, Some(Uuid::from_u128(1)))));
+                assert_eq!(app.comparison_job, Some(Uuid::from_u128(2)));
+                assert!(app.loaded);
+                assert_eq!(app.active_key, active_key);
+                assert!(input.is_file());
+                assert_eq!(
+                    std::fs::read(dir.path().join("library.json")).unwrap(),
+                    manifest
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn successful_removal_updates_manifest_and_removes_owned_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let key = app.selected.unwrap();
+        let input = app.library.tracks[0].input.clone();
+        app.loaded = true;
+        app.active_key = Some(key);
+        let _ = app.update(Message::Remove(key));
+        assert!(app.error.is_none());
+        assert!(app.library.tracks.is_empty());
+        assert!(app.selected.is_none());
+        assert!(!app.loaded);
+        assert!(app.active_key.is_none());
+        assert!(!input.exists());
+        let saved = Library::load(dir.path()).unwrap();
+        assert!(saved.tracks.is_empty());
+        assert!(saved.selected.is_none());
+    }
+
+    #[test]
+    fn reanalyze_forces_fresh_analysis_for_items_already_waiting_in_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let key = app.selected.unwrap();
+        let source = dir.path().join("other.wav");
+        std::fs::write(&source, b"other audio").unwrap();
+        let other = library::import(dir.path(), source, Uuid::from_u128(1)).unwrap();
+        app.analyzing = Some((other.id, None));
+        app.library.tracks.push(other);
+        app.analysis_queue.push_back(key);
+        let _ = app.update(Message::Analyze);
+        assert_eq!(
+            app.analysis_queue.iter().copied().collect::<Vec<_>>(),
+            vec![key]
+        );
+        assert!(
+            app.force_analysis.contains(&key),
+            "Reanalyze must bypass the cache even when already queued"
+        );
+        let _ = app.update(Message::Analyze);
+        assert_eq!(app.analysis_queue.len(), 1);
+        assert!(app.force_analysis.contains(&key));
+    }
+
+    #[test]
+    fn relative_tool_overrides_block_mastering_without_rewriting_saved_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.library.app_settings.ffmpeg = "ffmpeg".into();
+        assert!(
+            app.queue_master()
+                .unwrap_err()
+                .contains("FFmpeg: use an absolute path")
+        );
+        assert!(app.library.jobs.is_empty());
+        assert_eq!(app.library.app_settings.ffmpeg, "ffmpeg");
+        app.library.app_settings.ffmpeg.clear();
+        app.queue_master().unwrap();
+        assert!(PathBuf::from(&app.library.jobs[0].tools.ffmpeg).is_absolute());
+    }
+
+    #[test]
     fn disabled_mastering_ignores_pending_external_reference_and_preserves_uuid_jobs() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
@@ -1772,9 +1907,10 @@ mod tests {
         let id = app.active.as_ref().unwrap().id;
         let tools = app.library.jobs[0].tools.backend.clone();
         let _ = app.open_preferences();
+        let next_engine = dir.path().join("next engine");
         let _ = app.update_preferences(preferences::Event::Edit(
             Field::Backend,
-            "next engine".into(),
+            next_engine.display().to_string(),
         ));
         let _ = app.update(Message::Backend(id, backend::Update::Progress(0.5)));
         let _ = app.update(Message::Backend(
@@ -1795,10 +1931,7 @@ mod tests {
         assert_eq!(app.library.jobs[0].tools.backend, tools);
         assert_eq!(app.active.as_ref().unwrap().id, id);
         app.queue_master().unwrap();
-        assert_eq!(
-            app.library.jobs[1].tools.backend,
-            PathBuf::from("next engine")
-        );
+        assert_eq!(app.library.jobs[1].tools.backend, next_engine);
     }
 
     #[test]
@@ -2067,12 +2200,13 @@ mod tests {
             app.listening_key(),
             Some((Uuid::from_u128(0), Some(app.library.jobs[0].id)))
         );
-        assert!((app.selected_gain() - 10f32.powf(-6. / 20.)).abs() < 0.0001);
+        assert_eq!(app.selected_gain(), 1.);
         let _ = app.update(Message::Side(true));
         assert_eq!(
             app.listening_key(),
             Some((Uuid::from_u128(0), Some(app.library.jobs[1].id)))
         );
+        assert!((app.selected_gain() - 10f32.powf(-3. / 20.)).abs() < 0.0001);
         assert_eq!(app.library.draft.loudness, "-10");
         assert_eq!(
             Library::load(dir.path()).unwrap().comparison_job,

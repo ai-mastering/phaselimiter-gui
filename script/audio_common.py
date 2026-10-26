@@ -96,7 +96,12 @@ class Build:
         asset = PINS["sources"][name]
         archive = download(asset, self.downloads)
         destination = self.sources / name
-        if not (destination / ".extracted").exists():
+        marker = destination / ".extracted"
+        try:
+            extracted = json.loads(marker.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            extracted = {}
+        if not isinstance(extracted, dict) or extracted.get("sha256") != asset["sha256"]:
             shutil.rmtree(destination, ignore_errors=True)
             extract = destination / "unpacked"
             if archive.suffix == ".deb":
@@ -110,8 +115,9 @@ class Build:
             contents = destination / "unpacked"
             children = list(contents.iterdir())
             root = children[0] if len(children) == 1 and children[0].is_dir() else contents
-            (destination / ".extracted").write_text(str(root.relative_to(destination)))
-        return destination / (destination / ".extracted").read_text()
+            extracted = {"sha256": asset["sha256"], "root": str(root.relative_to(destination))}
+            marker.write_text(json.dumps(extracted))
+        return destination / extracted["root"]
 
     def cmake(self, name, source, options=()):
         directory = self.work / "build" / name

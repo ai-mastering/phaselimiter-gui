@@ -67,8 +67,11 @@ impl App {
                 .unwrap_or_else(|| "previous selection".into());
             messages.push(format!("Selected audio unavailable · playing {playing}"));
         }
-        if self.equalize && self.listening_analysis().is_none() {
-            messages.push("Loudness matching awaits analysis.".into());
+        if self.equalize
+            && self.job().is_some_and(|j| j.status == Status::Succeeded)
+            && self.matching_loudness().is_none()
+        {
+            messages.push("Loudness matching awaits analysis for both A and B.".into());
         }
         if self.analyzing.is_some() {
             messages.push("Analyzing…".into());

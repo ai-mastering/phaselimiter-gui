@@ -105,12 +105,13 @@ pub fn import(root: &Path, source: PathBuf, id: Uuid) -> Result<Track, String> {
     if !source.is_file() {
         return Err("Choose an existing audio file.".into());
     }
-    let dir = root.join("audio").join(id.to_string());
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let audio_dir = root.join("audio");
+    fs::create_dir_all(&audio_dir).map_err(|e| e.to_string())?;
+    let dir = audio_dir.join(id.to_string());
     let extension = source.extension().unwrap_or_default();
     let input = dir.join("input").with_extension(extension);
     // Copy through a temporary file so failed imports cannot become registered inputs.
-    let mut temporary = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(&audio_dir).map_err(|e| e.to_string())?;
     let before = hash(&source)?;
     io::copy(
         &mut File::open(&source).map_err(|e| e.to_string())?,
@@ -122,9 +123,13 @@ pub fn import(root: &Path, source: PathBuf, id: Uuid) -> Result<Track, String> {
     if copied != before || hash(&source)? != before {
         return Err("The source changed while importing. Wait for the DAW export to finish and add it again.".into());
     }
-    temporary
-        .persist_noclobber(&input)
-        .map_err(|e| e.to_string())?;
+    // Allocate the owned directory only after copying and verifying succeeds.
+    // A duplicate identity must never reuse or remove an existing directory.
+    fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    if let Err(error) = temporary.persist_noclobber(&input) {
+        let _ = fs::remove_dir(&dir);
+        return Err(error.to_string());
+    }
     Ok(Track {
         id,
         name: source
@@ -296,6 +301,36 @@ mod tests {
         fs::write(&first.input, b"tampered").unwrap();
         assert!(verify(&first.input, &first.hash).is_err());
     }
+    #[cfg(unix)]
+    #[test]
+    fn failed_import_leaves_no_unregistered_audio_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        // The source name fits NAME_MAX; the stored "input.<extension>" does not.
+        let source = dir.path().join(format!("a.{}", "x".repeat(253)));
+        fs::write(&source, b"audio").unwrap();
+        assert!(import(dir.path(), source.clone(), Uuid::from_u128(1)).is_err());
+        assert!(
+            !dir.path()
+                .join("audio")
+                .join(Uuid::from_u128(1).to_string())
+                .exists()
+        );
+        assert_eq!(fs::read_dir(dir.path().join("audio")).unwrap().count(), 0);
+        assert_eq!(fs::read(source).unwrap(), b"audio");
+    }
+
+    #[test]
+    fn failed_duplicate_import_preserves_the_existing_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.wav");
+        fs::write(&source, b"original").unwrap();
+        let original = import(dir.path(), source.clone(), Uuid::from_u128(1)).unwrap();
+        fs::write(&source, b"changed").unwrap();
+        assert!(import(dir.path(), source, original.id).is_err());
+        verify(&original.input, &original.hash).unwrap();
+        assert_eq!(fs::read(original.input).unwrap(), b"original");
+    }
+
     #[test]
     fn restores_history_and_marks_running_work_interrupted() {
         let dir = tempfile::tempdir().unwrap();

@@ -185,11 +185,14 @@ impl Mixer {
                     return;
                 }
                 self.region = region;
-                if let Some((start, end)) = region
-                    && (self.position < start || self.position >= end)
-                {
-                    self.invalidate(start);
-                }
+                // Discard queued audio from the old loop and restart at the
+                // audible position, rather than the mixer's prefetched position.
+                let position = self.shared.position.load(Ordering::Acquire).min(duration);
+                let position = match region {
+                    Some((start, end)) if position < start || position >= end => start,
+                    _ => position,
+                };
+                self.invalidate(position);
                 self.shared
                     .looping
                     .store(region.is_some(), Ordering::Release);
@@ -229,6 +232,8 @@ impl Mixer {
         }
         self.pending = None;
         self.shared.duration.store(frames, Ordering::Release);
+        // A loop belonging to the previous source may exceed this source's length.
+        self.command(Command::Region(self.region));
         if self.position >= frames {
             self.invalidate(frames);
             self.shared.playing.store(false, Ordering::Release);
@@ -550,6 +555,40 @@ mod tests {
             assert_eq!(next(&mut m).samples, [expected; 2]);
         }
     }
+    #[test]
+    fn changing_loop_discards_queued_frames_and_resumes_at_audible_position() {
+        let samples: Vec<_> = (0..20).map(|i| [i as f32; 2]).collect();
+        let mut m = start(test_audio(&samples, None));
+        for _ in 0..8 {
+            next(&mut m);
+        }
+        // Rendering runs ahead of the device's audible position.
+        m.shared.position.store(3, Ordering::Release);
+        let epoch = m.shared.epoch.load(Ordering::Acquire);
+        m.command(Command::Region(Some((2, 10))));
+        assert!(m.shared.epoch.load(Ordering::Acquire) > epoch);
+        assert_eq!(next(&mut m).samples, [3.; 2]);
+        m.shared.position.store(4, Ordering::Release);
+        let epoch = m.shared.epoch.load(Ordering::Acquire);
+        m.command(Command::Region(None));
+        assert!(m.shared.epoch.load(Ordering::Acquire) > epoch);
+        assert_eq!(next(&mut m).samples, [4.; 2]);
+    }
+
+    #[test]
+    fn switching_to_shorter_audio_clamps_loop_and_can_seek_to_start() {
+        let mut m = start(test_audio(&[[0.5; 2]; 20], None));
+        m.command(Command::Region(Some((10, 18))));
+        next(&mut m);
+        m.command(Command::Load(test_audio(&[[0.1; 2]; 5], None), 1.));
+        m.activate();
+        assert_eq!(m.region, None);
+        assert!(!m.shared.looping.load(Ordering::Acquire));
+        m.command(Command::Seek(0));
+        assert_eq!(m.position, 0);
+        assert!(next(&mut m).samples[0].is_finite());
+    }
+
     #[test]
     fn callback_discards_stale_audio_and_stops_at_eof() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
