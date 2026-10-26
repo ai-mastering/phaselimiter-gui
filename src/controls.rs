@@ -163,12 +163,56 @@ pub fn choice<'a, T: Clone + PartialEq + ToString + 'a>(
     }
 }
 impl App {
+    /// The same setting guard is used by the button and execution path.
+    pub(super) fn settings_issue(&self) -> Option<(Option<Field>, String)> {
+        if let Some(field) = first_invalid(self) {
+            let label = match field {
+                Field::Loudness => "Target level",
+                Field::Ceiling => "Ceiling",
+                Field::LowpassCut => "Lowpass true-peak frequency",
+                Field::Intensity => "Intensity",
+                Field::LowCut => "Low cut",
+                Field::HighCut => "High cut",
+                Field::SampleRate => "Sample rate",
+                Field::BitDepth => "WAV bits",
+                Field::Oversample => "Oversampling",
+                Field::MaxIter1 => "Outer iterations",
+                Field::MaxIter2 => "Inner iterations",
+                Field::Evaluations => "Evaluations",
+                Field::Seed => "Seed",
+                Field::Workers => "Workers",
+                _ => unreachable!("first_invalid only returns settings fields"),
+            };
+            let reason = if self.numeric_edits.contains_key(&field) {
+                format!("{label}: finish entering a value, or press Enter to restore it.")
+            } else if let Some(spec) = spec(field, &self.library.draft) {
+                format!("{label}: {}", spec.hint())
+            } else {
+                format!("{label}: choose a supported value.")
+            };
+            return Some((Some(field), reason));
+        }
+        if !self.reference_ready() {
+            let reason = if self.library.draft.reference_audio.is_empty() {
+                "Choose a reference audio file.".into()
+            } else {
+                self.ready_reference()
+                    .err()
+                    .unwrap_or_else(|| "Reference analysis is not ready.".into())
+            };
+            return Some((Some(Field::Reference), format!("Reference: {reason}")));
+        }
+        self.library.draft.parse().err().map(|error| (None, error))
+    }
+
     pub(super) fn numeric<'a>(&'a self, label: &'static str, field: Field) -> Element<'a, Message> {
         let enabled = enabled(field, &self.library.draft);
         let value = self.field_value(field);
         let spec = spec(field, &self.library.draft);
+        let unfinished = enabled && self.numeric_edits.contains_key(&field);
         let invalid = enabled
-            && (self.numeric_errors.contains_key(&field) || spec.is_some_and(|n| !n.valid(value)));
+            && (spec.is_some_and(|n| !n.valid(value))
+                || unfinished && self.numeric_errors.contains_key(&field));
         let buffer = if enabled {
             self.numeric_edits
                 .get(&field)
@@ -211,7 +255,9 @@ impl App {
         ]
         .spacing(3)
         .width(Fill);
-        if invalid && let Some(spec) = spec {
+        if (invalid || enabled && self.numeric_errors.contains_key(&field))
+            && let Some(spec) = spec
+        {
             content = content.push(
                 text(
                     self.numeric_errors
@@ -220,10 +266,14 @@ impl App {
                         .unwrap_or_else(|| spec.hint()),
                 )
                 .size(11)
-                .color(theme::ERROR),
+                .color(if invalid {
+                    theme::ERROR
+                } else {
+                    theme::DISABLED_LABEL
+                }),
             );
         }
-        if enabled && self.numeric_edits.contains_key(&field) {
+        if unfinished {
             content = content.push(
                 text(format!(
                     "Unfinished input; current setting: {value}. Enter to restore."
@@ -353,7 +403,9 @@ pub fn first_invalid(app: &App) -> Option<Field> {
     .into_iter()
     .find(|field| {
         enabled(*field, &app.library.draft)
-            && (spec(*field, &app.library.draft).is_some_and(|n| !n.valid(app.field_value(*field)))
+            && (app.numeric_edits.contains_key(field)
+                || spec(*field, &app.library.draft)
+                    .is_some_and(|n| !n.valid(app.field_value(*field)))
                 || !valid_choice(*field, app.field_value(*field), &app.library.draft))
     })
 }
@@ -405,6 +457,11 @@ pub fn reveal(field: Field) -> iced::Task<Message> {
 }
 impl App {
     pub(super) fn reveal_setting(&mut self, field: Field) -> iced::Task<Message> {
+        if self.numeric_edits.contains_key(&field)
+            && let Some(spec) = spec(field, &self.library.draft)
+        {
+            self.numeric_errors.insert(field, spec.hint());
+        }
         self.show_settings = true;
         self.show_app_settings = false;
         match field {
@@ -422,10 +479,14 @@ impl App {
             .numeric_errors
             .get(&Field::Reference)
             .filter(|_| self.library.draft.mastering);
+        let invalid = self.library.draft.mastering
+            && (error.is_some()
+                || self.library.draft.use_reference
+                    && matches!(self.draft_reference.report, Some(Err(_))));
         if let Some(error) = error {
             content = content.push(text(error).size(11).color(theme::ERROR));
         }
-        group(content.into(), Field::Reference, error.is_some())
+        group(content.into(), Field::Reference, invalid)
     }
 }
 

@@ -85,6 +85,8 @@ enum Message {
     Adjust(Field, bool),
     CommitNumber(Field),
     RevealNumber(Field, Option<f32>),
+    ShowSettingIssue(Field),
+    NumberFocused(Field, String, bool),
     Input(String),
     AddInput,
     FileDropped(PathBuf),
@@ -465,6 +467,9 @@ impl App {
         task
     }
     fn queue_master(&mut self) -> Result<(), String> {
+        if let Some((_, reason)) = self.settings_issue() {
+            return Err(reason);
+        }
         let id = self
             .composer_track
             .or(self.selected.map(|key| key.0))
@@ -549,6 +554,7 @@ impl App {
                 if let Some(spec) = controls::spec(field, &self.library.draft) {
                     if spec.partial(&value) {
                         self.numeric_edits.insert(field, value);
+                        self.numeric_errors.remove(&field);
                         return Task::none();
                     }
                     if !spec.valid(&value) {
@@ -584,6 +590,18 @@ impl App {
             Message::CommitNumber(field) => {
                 self.numeric_edits.remove(&field);
                 self.numeric_errors.remove(&field);
+            }
+            Message::NumberFocused(field, buffer, focused) => {
+                if !focused
+                    && controls::enabled(field, &self.library.draft)
+                    && self.numeric_edits.get(&field) == Some(&buffer)
+                    && let Some(spec) = controls::spec(field, &self.library.draft)
+                {
+                    self.numeric_errors.insert(field, spec.hint());
+                }
+            }
+            Message::ShowSettingIssue(field) => {
+                tasks.push(self.reveal_setting(field));
             }
             Message::RevealNumber(field, offset) => {
                 if let Some(y) = offset {
@@ -809,7 +827,6 @@ impl App {
                 self.show_optimization = !self.show_optimization;
             }
             Message::Master => {
-                self.numeric_edits.clear();
                 if let Some(field) = controls::first_invalid(self) {
                     tasks.push(self.reveal_setting(field));
                 } else {
@@ -1133,6 +1150,20 @@ impl App {
                 {
                     save = true;
                 }
+                for (&field, buffer) in &self.numeric_edits {
+                    if controls::enabled(field, &self.library.draft)
+                        && !self.numeric_errors.contains_key(&field)
+                    {
+                        let buffer = buffer.clone();
+                        tasks.push(
+                            iced::widget::operation::is_focused(format!("number-{field:?}")).map(
+                                move |focused| {
+                                    Message::NumberFocused(field, buffer.clone(), focused)
+                                },
+                            ),
+                        );
+                    }
+                }
                 if self.library.draft.use_reference {
                     tasks.push(
                         iced::widget::operation::is_focused("reference-path")
@@ -1414,6 +1445,100 @@ mod tests {
         assert!(app.show_optimization);
         assert!(app.library.jobs.is_empty());
     }
+    #[test]
+    fn invalid_and_unfinished_settings_disable_run_and_explain_how_to_recover() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.show_settings = true;
+        for (field, value) in [(Field::MaxIter1, "bad"), (Field::SampleRate, "123")] {
+            *app.field_mut(field) = value.into();
+            let (_, reason) = app.settings_issue().unwrap();
+            let mut ui = iced_test::Simulator::with_size(
+                Default::default(),
+                iced::Size::new(850., 650.),
+                app.view(),
+            );
+            assert!(
+                ui.find(format!("Cannot run mastering: {reason}"))
+                    .unwrap()
+                    .visible_bounds()
+                    .is_some()
+            );
+            assert!(ui.find("Run mastering").unwrap().visible_bounds().is_some());
+            ui.click("Run mastering").unwrap();
+            assert!(!ui.into_messages().any(|m| matches!(m, Message::Master)));
+            assert!(app.queue_master().is_err());
+            let _ = app.update(Message::Edit(
+                field,
+                if field == Field::MaxIter1 {
+                    "100"
+                } else {
+                    "44100"
+                }
+                .into(),
+            ));
+            assert!(app.settings_issue().is_none());
+        }
+        let _ = app.update(Message::Edit(Field::Loudness, "-".into()));
+        assert!(!app.numeric_errors.contains_key(&Field::Loudness));
+        assert!(app.settings_issue().unwrap().1.contains("finish entering"));
+        assert!(app.queue_master().is_err());
+        let _ = app.update(Message::NumberFocused(Field::Loudness, "-".into(), false));
+        assert!(app.numeric_errors.contains_key(&Field::Loudness));
+        let _ = app.update(Message::Master);
+        assert_eq!(app.numeric_edits[&Field::Loudness], "-");
+        assert!(app.library.jobs.is_empty());
+        let _ = app.update(Message::CommitNumber(Field::Loudness));
+        assert!(app.settings_issue().is_none());
+        let _ = app.update(Message::Edit(Field::Loudness, "NaN".into()));
+        assert!(app.settings_issue().is_none()); // Rejected input did not replace the valid value.
+        let _ = app.update(Message::Edit(Field::Loudness, "-12".into()));
+        let _ = app.update(Message::NumberFocused(Field::Loudness, "-".into(), false));
+        assert!(!app.numeric_errors.contains_key(&Field::Loudness)); // Ignore stale focus results.
+        app.queue_master().unwrap();
+        assert_eq!(app.library.jobs.len(), 1);
+        assert_eq!(app.library.jobs[0].config.loudness, -12.);
+    }
+
+    #[test]
+    fn reference_blockers_are_visible_by_run_and_link_to_the_reference_control() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.show_settings = true;
+        app.library.draft.use_reference = true;
+        for error in [None, Some("The reference file could not be read.")] {
+            app.draft_reference.report = error.map(|e| Err(e.into()));
+            app.library.draft.reference_audio =
+                if error.is_some() { "missing.wav" } else { "" }.into();
+            let (field, reason) = app.settings_issue().unwrap();
+            assert_eq!(field, Some(Field::Reference));
+            let mut ui = iced_test::Simulator::with_size(
+                Default::default(),
+                iced::Size::new(850., 650.),
+                app.view(),
+            );
+            assert!(
+                ui.find(format!("Cannot run mastering: {reason}"))
+                    .unwrap()
+                    .visible_bounds()
+                    .is_some()
+            );
+            ui.click("Run mastering").unwrap();
+            ui.click("Show setting").unwrap();
+            let messages: Vec<_> = ui.into_messages().collect();
+            assert!(!messages.iter().any(|m| matches!(m, Message::Master)));
+            assert!(
+                messages
+                    .iter()
+                    .any(|m| matches!(m, Message::ShowSettingIssue(Field::Reference)))
+            );
+        }
+        let _ = app.update(Message::Mastering(false));
+        app.library.draft.reference_audio.clear();
+        assert!(app.settings_issue().is_none());
+        app.queue_master().unwrap();
+    }
+
     #[test]
     fn numeric_edits_keep_valid_committed_settings_and_ignore_disabled_fields() {
         let mut app = App::default();

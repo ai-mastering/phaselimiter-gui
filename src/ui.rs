@@ -723,6 +723,26 @@ impl App {
         if let Some(job) = self.job() {
             panel = panel.push(self.run_changes_view(job));
         }
+        let issue = self.settings_issue().or_else(|| {
+            if track.is_none() {
+                Some((None, "Select an input first.".into()))
+            } else if self.root.is_none() {
+                Some((None, "Data directory unavailable.".into()))
+            } else {
+                None
+            }
+        });
+        if let Some((field, reason)) = &issue {
+            panel = panel.push(text(format!("Cannot run mastering: {reason}")).size(12));
+            if let Some(field) = field {
+                panel = panel.push(
+                    button("Show setting")
+                        .on_press(Message::ShowSettingIssue(*field))
+                        .padding(4)
+                        .style(theme::normal),
+                );
+            }
+        }
         panel
             .push(
                 button(if self.active.is_some() {
@@ -730,11 +750,7 @@ impl App {
                 } else {
                     "Run mastering"
                 })
-                .on_press_maybe(
-                    track
-                        .filter(|_| self.reference_ready())
-                        .map(|_| Message::Master),
-                )
+                .on_press_maybe(issue.is_none().then_some(Message::Master))
                 .width(Fill)
                 .padding(9),
             )

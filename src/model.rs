@@ -380,7 +380,7 @@ impl Settings {
         if evaluations == 0 || evaluations > i32::MAX as u32 {
             return Err("Evaluation budget: use 1 to 2147483647.".into());
         }
-        if self.use_reference && self.reference_audio.is_empty() {
+        if self.mastering && self.use_reference && self.reference_audio.is_empty() {
             return Err("Choose a reference audio file.".into());
         }
         let config = Config {
@@ -608,6 +608,7 @@ mod tests {
             lowpass_cut: "invalid".into(),
             loudness: "invalid".into(),
             reference: "missing.json".into(),
+            use_reference: true,
             ..Settings::default()
         };
         let config = s.parse().unwrap();
