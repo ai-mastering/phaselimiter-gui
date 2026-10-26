@@ -2117,6 +2117,28 @@ mod tests {
     }
 
     #[test]
+    fn long_filenames_preserve_workspace_actions_and_source_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.library.tracks[0].name = format!("{}_realfinal.wav", "mymusic_piano_eq_".repeat(15));
+        app.library.tracks[0].source = dir.path().join(&app.library.tracks[0].name);
+        let expected = app.library.tracks[0].source.display().to_string();
+        for width in [850., 1280.] {
+            let mut ui = iced_test::Simulator::with_size(
+                Default::default(),
+                iced::Size::new(width, 800.),
+                app.view(),
+            );
+            assert!(ui.find("Play").unwrap().visible_bounds().is_some());
+            ui.click("Copy source path").unwrap();
+            assert!(
+                ui.into_messages()
+                    .any(|m| matches!(m, Message::CopyText(path) if path == expected))
+            );
+        }
+    }
+
+    #[test]
     fn narrow_settings_keep_transport_and_run_action_visible() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());

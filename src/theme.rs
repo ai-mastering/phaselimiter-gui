@@ -116,6 +116,21 @@ pub fn invalid_group(_: &Theme) -> container::Style {
         ..container::Style::default()
     }
 }
+
+/// Hover details must obscure the labels underneath the overlay.
+pub fn tooltip(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::WHITE.into()),
+        text_color: Some(INK),
+        border: border(EDGE, 1.0),
+        shadow: Shadow {
+            color: Color::BLACK.scale_alpha(0.18),
+            offset: iced::Vector::new(0.0, 2.0),
+            blur_radius: 6.0,
+        },
+        ..container::Style::default()
+    }
+}
 pub fn numeric_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     input(theme, status)
 }

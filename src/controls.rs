@@ -489,7 +489,12 @@ impl App {
                 || self.library.draft.use_reference
                     && matches!(self.draft_reference.report, Some(Err(_))));
         if let Some(error) = error {
-            content = content.push(text(error).size(11).color(theme::ERROR));
+            content = content.push(
+                text(error)
+                    .size(11)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    .color(theme::ERROR),
+            );
         }
         group(content.into(), Field::Reference, invalid)
     }
