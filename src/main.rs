@@ -9,6 +9,7 @@ mod comparison;
 mod controls;
 mod descriptions;
 mod diagnostics;
+mod history;
 mod labels;
 mod library;
 mod measurements;
@@ -45,6 +46,8 @@ use std::{
 };
 
 type AudioKey = (Uuid, Option<Uuid>);
+/// History always selects a mastering job; original audio is only an A/B source.
+type ResultKey = (Uuid, Uuid);
 fn main() -> iced::Result {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
@@ -103,7 +106,7 @@ enum Message {
     ToggleAudioPath,
     FileDropped(PathBuf),
     Hover(bool),
-    Imported(Result<Track, String>),
+    Imported(Result<Track, String>, Box<MasterRequest>),
     Format(Format),
     Solver(Solver),
     PreserveBass(bool),
@@ -126,8 +129,10 @@ enum Message {
     Master,
     Start,
     Cancel,
-    Remove(AudioKey),
-    Select(AudioKey),
+    Remove(ResultKey),
+    Select(ResultKey),
+    HistoryScroll(f32),
+    HistoryNavigate(ResultKey, f32),
     Backend(Uuid, backend::Update),
     Completed(Uuid, Result<String, String>),
     Analyzed(AudioKey, Result<analysis::Analysis, String>),
@@ -158,7 +163,15 @@ struct Active {
     cancel: Arc<AtomicBool>,
     _handle: iced::task::Handle,
 }
+#[derive(Debug, Clone)]
+struct MasterRequest {
+    config: model::Config,
+    tools: model::ExecutionTools,
+    reference_hash: Option<String>,
+}
+
 struct App {
+    history_offset: f32,
     library: Library,
     root: Option<PathBuf>,
     // Drop the save worker before releasing the library lock.
@@ -166,7 +179,7 @@ struct App {
     _library_lock: Option<std::fs::File>,
     input: String,
     show_audio_path: bool,
-    selected: Option<AudioKey>,
+    selected: Option<ResultKey>,
     active: Option<Active>,
     running: bool,
     closing: bool,
@@ -225,6 +238,7 @@ impl Default for App {
             hovering: false,
             error: None,
             notice: None,
+            history_offset: 0.,
             main_window: iced::window::Id::unique(),
             preferences: None,
             comparison_job: None,
@@ -273,11 +287,9 @@ impl App {
             Ok((root, library, lock, worker)) => {
                 app.save_worker = Some(worker);
                 app._library_lock = Some(lock);
-                app.selected = library.selected;
+                app.selected = history::restore_selection(&library);
                 app.comparison_job = library.comparison_job;
-                app.output_side = library
-                    .output_side
-                    .unwrap_or_else(|| library.selected.is_some_and(|key| key.1.is_some()));
+                app.output_side = library.output_side.unwrap_or(app.selected.is_some());
                 app.equalize = library.equalize.unwrap_or(true);
                 app.library = library;
                 app.root = Some(root);
@@ -351,7 +363,7 @@ impl App {
     }
     fn save(&mut self) -> bool {
         self.memo_save_at = None;
-        self.library.selected = self.selected;
+        self.library.selected = self.selected.map(|(track, job)| (track, Some(job)));
         self.library.output_side = Some(self.output_side);
         self.library.equalize = Some(self.equalize);
         self.library.comparison_job = self.comparison_job;
@@ -385,7 +397,7 @@ impl App {
         self.library.tracks.iter().find(|t| t.id == id)
     }
     fn job(&self) -> Option<&Job> {
-        let id = self.selected?.1?;
+        let id = self.selected?.1;
         self.library.jobs.iter().find(|j| j.id == id)
     }
     fn audio(&self, key: AudioKey) -> Option<(PathBuf, String)> {
@@ -403,8 +415,19 @@ impl App {
             self.error = Some("The data directory is unavailable.".into());
             return Task::none();
         };
+        let request = match self.master_request() {
+            Ok(request) => request,
+            Err(error) => {
+                self.error = Some(error);
+                return self
+                    .settings_issue()
+                    .and_then(|(field, _)| field)
+                    .map_or_else(Task::none, |field| self.reveal_setting(field));
+            }
+        };
         let id = Uuid::new_v4();
         self.importing += 1;
+        self.error = None;
         self.save();
         Task::perform(
             async move {
@@ -412,7 +435,7 @@ impl App {
                     .await
                     .map_err(|e| e.to_string())?
             },
-            Message::Imported,
+            move |result| Message::Imported(result, Box::new(request.clone())),
         )
     }
     fn start_analysis(&mut self) -> Task<Message> {
@@ -479,21 +502,19 @@ impl App {
         task
     }
     fn queue_master(&mut self) -> Result<(), String> {
+        let request = self.master_request()?;
+        let track = self
+            .track()
+            .ok_or("Select a mastering result first.")?
+            .clone();
+        self.queue_master_for(&track, request)?;
+        Ok(())
+    }
+
+    fn master_request(&self) -> Result<MasterRequest, String> {
         if let Some((_, reason)) = self.settings_issue() {
             return Err(reason);
         }
-        let id = self
-            .selected
-            .map(|key| key.0)
-            .ok_or("Select an input first.")?;
-        let track = self
-            .library
-            .tracks
-            .iter()
-            .find(|t| t.id == id)
-            .ok_or("Select an input first.")?
-            .clone();
-        let root = self.root.as_ref().ok_or("Data directory unavailable.")?;
         let mut config = self.library.draft.parse()?;
         if self.library.draft.mastering && self.library.draft.use_reference {
             config.reference = Some(
@@ -520,39 +541,49 @@ impl App {
                 .ok_or("Reference: analysis has no content hash.")?;
             library::verify(reference, expected).map_err(|e| format!("Reference: {e}"))?;
         }
-        let id = Uuid::new_v4();
-
-        let dir = root.join("jobs").join(id.to_string());
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let output = dir.join("output").with_extension(config.format.extension());
         let reference_hash = config
             .reference
             .as_ref()
             .map(|p| library::hash(p))
             .transpose()?;
+        Ok(MasterRequest {
+            config,
+            tools: self.library.app_settings.resolved_tools(),
+            reference_hash,
+        })
+    }
+
+    fn queue_master_for(&mut self, track: &Track, request: MasterRequest) -> Result<Uuid, String> {
+        let root = self.root.as_ref().ok_or("Data directory unavailable.")?;
+        let id = Uuid::new_v4();
+        let dir = root.join("jobs").join(id.to_string());
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let output = dir
+            .join("output")
+            .with_extension(request.config.format.extension());
         self.library.jobs.push(Job {
             id,
             created_at: Some(chrono::Utc::now()),
             memo: String::new(),
             track_id: track.id,
-            input: track.input,
+            input: track.input.clone(),
             output,
-            config,
-            tools: self.library.app_settings.resolved_tools(),
+            config: request.config,
+            tools: request.tools,
             status: Status::Waiting,
             progress: 0.,
             log: Vec::new(),
             output_hash: None,
-            input_hash: Some(track.hash),
-            reference_hash,
+            input_hash: Some(track.hash.clone()),
+            reference_hash: request.reference_hash,
             analysis: None,
             analysis_error: None,
             limiting_error: None,
             command: None,
         });
-        self.running = true;
-        self.notice = Some("Mastering queued. Playback selection is unchanged.".into());
-        Ok(())
+        self.running = !self.closing;
+        self.notice = Some("Mastering queued.".into());
+        Ok(id)
     }
     fn update(&mut self, message: Message) -> Task<Message> {
         let mut tasks = Vec::new();
@@ -666,22 +697,31 @@ impl App {
             }
             Message::FileDropped(path) => tasks.push(self.import(path)),
             Message::Hover(value) => self.hovering = value,
-            Message::Imported(result) => {
+            Message::Imported(result, request) => {
                 self.importing = self.importing.saturating_sub(1);
                 match result {
-                    Ok(track) => {
-                        let key = (track.id, None);
-                        let warm = self.request_decode(track.input.clone(), track.hash.clone());
-                        tasks.push(warm);
-                        self.library.tracks.push(track);
-                        self.analysis_queue.push_back(key);
-                        self.notice =
-                            Some("Audio added. Select it in the history to listen.".into());
-                        if self.selected.is_none() {
-                            self.selected = Some(key);
-                            tasks.push(self.prepare());
+                    Ok(track) => match self.queue_master_for(&track, *request) {
+                        Ok(job_id) => {
+                            let track_id = track.id;
+                            tasks
+                                .push(self.request_decode(track.input.clone(), track.hash.clone()));
+                            self.library.tracks.push(track);
+                            self.analysis_queue.push_back((track_id, None));
+                            if self.selected.is_none() {
+                                self.selected = Some((track_id, job_id));
+                                self.output_side = true;
+                                tasks.push(self.prepare());
+                            }
                         }
-                    }
+                        Err(error) => {
+                            if let Some(root) = &self.root {
+                                let _ = std::fs::remove_dir_all(
+                                    root.join("audio").join(track.id.to_string()),
+                                );
+                            }
+                            self.error = Some(error);
+                        }
+                    },
                     Err(error) => self.error = Some(error),
                 }
                 save = true;
@@ -870,24 +910,39 @@ impl App {
                     active.cancel.store(true, Ordering::Relaxed);
                 }
             }
+            Message::HistoryScroll(offset) => self.history_offset = offset,
+            Message::HistoryNavigate(key, offset) => {
+                self.history_offset = offset;
+                return Task::batch([
+                    self.update(Message::Select(key)),
+                    iced::widget::operation::scroll_to(
+                        "history-list",
+                        iced::widget::operation::AbsoluteOffset { x: 0., y: offset },
+                    ),
+                ]);
+            }
             Message::Select(key) => {
+                let Some(job) = self
+                    .library
+                    .jobs
+                    .iter()
+                    .find(|job| job.id == key.1 && job.track_id == key.0)
+                else {
+                    return Task::none();
+                };
+                let settings = settings_from_config(&job.config);
                 if self.memo_save_at.is_some() {
                     self.save();
                 }
-                if self.selected.map(|k| k.0) != Some(key.0)
-                    || key.1.is_none()
-                    || self.comparison_job == key.1
-                {
+                if self.selected.map(|k| k.0) != Some(key.0) || self.comparison_job == Some(key.1) {
                     self.comparison_job = None;
                 }
                 self.selected = Some(key);
-                if let Some(job) = self.job() {
-                    self.library.draft = settings_from_config(&job.config);
-                    self.numeric_edits.clear();
-                    self.numeric_errors.clear();
-                    self.invalidate_draft_reference(true);
-                }
-                self.output_side = key.1.is_some();
+                self.library.draft = settings;
+                self.numeric_edits.clear();
+                self.numeric_errors.clear();
+                self.invalidate_draft_reference(true);
+                self.output_side = true;
                 self.error = None;
                 self.notice = None;
                 tasks.push(self.prepare());
@@ -895,6 +950,14 @@ impl App {
                 save = true;
             }
             Message::Remove(key) => {
+                if !self
+                    .library
+                    .jobs
+                    .iter()
+                    .any(|job| job.id == key.1 && job.track_id == key.0)
+                {
+                    return Task::none();
+                }
                 let busy = self
                     .library
                     .jobs
@@ -908,32 +971,15 @@ impl App {
                     let previous_selected = self.selected;
                     let previous_comparison = self.comparison_job;
                     let previous_memo_save_at = self.memo_save_at;
-                    let removed_jobs: Vec<_> = self
-                        .library
-                        .jobs
-                        .iter()
-                        .filter(|j| {
-                            if let Some(id) = key.1 {
-                                j.id == id
-                            } else {
-                                j.track_id == key.0
-                            }
-                        })
-                        .map(|j| j.id)
-                        .collect();
-                    if let Some(id) = key.1 {
-                        self.library.jobs.retain(|j| j.id != id);
-                        if self.comparison_job == Some(id) {
-                            self.comparison_job = None;
-                        }
-                    } else {
-                        self.library.jobs.retain(|j| j.track_id != key.0);
-                        self.library.tracks.retain(|t| t.id != key.0);
+                    self.library.jobs.retain(|job| job.id != key.1);
+                    if self.comparison_job == Some(key.1) {
+                        self.comparison_job = None;
                     }
-                    if self
-                        .selected
-                        .is_some_and(|s| s == key || (key.1.is_none() && s.0 == key.0))
-                    {
+                    let remove_input = !self.library.jobs.iter().any(|job| job.track_id == key.0);
+                    if remove_input {
+                        self.library.tracks.retain(|track| track.id != key.0);
+                    }
+                    if self.selected == Some(key) {
                         self.selected = None;
                     }
                     // Commit the manifest before changing playback or removing files.
@@ -953,21 +999,16 @@ impl App {
                         tasks.push(self.prepare());
                     }
                     if let Some(root) = &self.root {
-                        for id in removed_jobs {
-                            if key.1.is_none() {
-                                let _ =
-                                    std::fs::remove_dir_all(root.join("jobs").join(id.to_string()));
-                            }
+                        let mut directories = vec![root.join("jobs").join(key.1.to_string())];
+                        if remove_input {
+                            directories.push(root.join("audio").join(key.0.to_string()));
                         }
-                        let dir = if let Some(id) = key.1 {
-                            root.join("jobs").join(id.to_string())
-                        } else {
-                            root.join("audio").join(key.0.to_string())
-                        };
-                        if let Err(e) = std::fs::remove_dir_all(dir) {
-                            self.error = Some(format!(
-                                "History removed; could not remove stored files: {e}"
-                            ));
+                        for dir in directories {
+                            if let Err(e) = std::fs::remove_dir_all(dir) {
+                                self.error = Some(format!(
+                                    "History removed; could not remove stored files: {e}"
+                                ));
+                            }
                         }
                     }
                     save = true;
@@ -1093,7 +1134,7 @@ impl App {
                 self.reference_report = None;
                 tasks.push(self.load_reference());
                 if let Some((id, job)) = self.selected {
-                    for key in [(id, None), (id, job)] {
+                    for key in [(id, None), (id, Some(job))] {
                         if self.analyzing != Some(key) {
                             self.force_analysis.insert(key);
                             if !self.analysis_queue.contains(&key) {
@@ -1404,6 +1445,100 @@ mod tests {
     }
 
     #[test]
+    fn imports_start_mastering_with_captured_settings_and_preserve_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App {
+            root: Some(dir.path().into()),
+            ..App::default()
+        };
+        app.library.draft.loudness = "-12".into();
+        let request = app.master_request().unwrap();
+        app.library.draft.loudness = "-9".into();
+        app.library.app_settings.backend = "/changed/backend".into();
+        for id in [1, 2] {
+            let source = dir.path().join(format!("mix-{id}.wav"));
+            std::fs::write(&source, b"audio").unwrap();
+            let track = library::import(dir.path(), source, Uuid::from_u128(id)).unwrap();
+            app.importing += 1;
+            let _ = app.update(Message::Imported(Ok(track), Box::new(request.clone())));
+        }
+        assert_eq!(app.importing, 0);
+        assert_eq!(app.library.jobs.len(), 2);
+        assert_eq!(app.history_keys().len(), 2);
+        assert!(
+            app.history_keys()
+                .iter()
+                .all(|key| app.library.jobs.iter().any(|job| job.id == key.1))
+        );
+        assert_eq!(
+            app.selected,
+            Some((Uuid::from_u128(1), app.library.jobs[0].id))
+        );
+        assert_eq!(app.library.jobs[0].status, Status::Processing);
+        assert_eq!(app.library.jobs[1].status, Status::Waiting);
+        for (track, job) in app.library.tracks.iter().zip(&app.library.jobs) {
+            assert_eq!(job.input, track.input);
+            assert_eq!(job.config.loudness, -12.);
+            assert_eq!(job.tools.backend, request.tools.backend);
+        }
+        assert_eq!(app.library.draft.loudness, "-9");
+    }
+
+    #[test]
+    fn invalid_settings_block_all_new_audio_entry_points() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App {
+            root: Some(dir.path().into()),
+            ..App::default()
+        };
+        app.library.draft.loudness = "invalid".into();
+        let path = dir.path().join("mix.wav");
+        for message in [
+            Message::FileDropped(path.clone()),
+            Message::AudioPicked(Some(vec![path.clone()])),
+            Message::AddInput,
+        ] {
+            app.input = path.display().to_string();
+            let _ = app.update(message);
+            assert_eq!(app.importing, 0);
+            assert!(app.library.jobs.is_empty());
+            assert!(app.library.tracks.is_empty());
+            assert!(app.error.is_some());
+        }
+    }
+
+    #[test]
+    fn variation_uses_original_input_and_keeps_previous_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        let first = app.library.jobs[0].clone();
+        let _ = app.update(Message::Select((first.track_id, first.id)));
+        app.library.draft.loudness = "-11".into();
+        let _ = app.update(Message::Master);
+        assert_eq!(app.library.jobs.len(), 2);
+        assert_eq!(app.library.jobs[1].input, first.input);
+        assert_ne!(app.library.jobs[1].input, first.output);
+        assert_eq!(app.library.jobs[1].config.loudness, -11.);
+        assert_eq!(app.library.jobs[0].output, first.output);
+        assert_eq!(app.library.jobs[0].config.loudness, first.config.loudness);
+    }
+
+    #[test]
+    fn legacy_original_selection_restores_a_result_without_creating_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.library.selected = Some((Uuid::nil(), None));
+        assert_eq!(history::restore_selection(&app.library), None);
+        app.queue_master().unwrap();
+        assert_eq!(
+            history::restore_selection(&app.library),
+            Some((Uuid::nil(), app.library.jobs[0].id))
+        );
+        assert_eq!(app.library.jobs.len(), 1);
+    }
+
+    #[test]
     fn audio_picker_cancel_preserves_state_and_multiple_files_start_imports() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App {
@@ -1444,13 +1579,13 @@ mod tests {
         };
         app.library.app_settings.export_dir = dir.display().to_string();
         app.library.tracks.push(track);
-        app.selected = Some((Uuid::from_u128(0), None));
+        app.selected = Some((Uuid::from_u128(0), Uuid::nil()));
         app
     }
     #[test]
     fn failed_removal_preserves_history_selection_and_playback_state() {
         for background_save in [false, true] {
-            for remove in [None, Some(Uuid::from_u128(1)), Some(Uuid::from_u128(2))] {
+            for remove in [Uuid::from_u128(1), Uuid::from_u128(2)] {
                 let dir = tempfile::tempdir().unwrap();
                 let mut app = app_with_track(dir.path());
                 let track_id = app.selected.unwrap().0;
@@ -1468,7 +1603,7 @@ mod tests {
                     job.output_hash = Some(library::hash(&job.output).unwrap());
                     app.library.jobs.push(job);
                 }
-                app.selected = Some((track_id, Some(Uuid::from_u128(1))));
+                app.selected = Some((track_id, Uuid::from_u128(1)));
                 app.comparison_job = Some(Uuid::from_u128(2));
                 app.loaded = true;
                 app.active_key = app.listening_key();
@@ -1492,7 +1627,7 @@ mod tests {
                     serde_json::to_value(&app.library).unwrap(),
                     serde_json::from_slice::<serde_json::Value>(&manifest).unwrap()
                 );
-                assert_eq!(app.selected, Some((track_id, Some(Uuid::from_u128(1)))));
+                assert_eq!(app.selected, Some((track_id, Uuid::from_u128(1))));
                 assert_eq!(app.comparison_job, Some(Uuid::from_u128(2)));
                 assert!(app.loaded);
                 assert_eq!(app.active_key, active_key);
@@ -1506,13 +1641,36 @@ mod tests {
     }
 
     #[test]
+    fn removing_one_variation_keeps_the_shared_input_and_other_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        app.queue_master().unwrap();
+        app.running = false;
+        let selected = (Uuid::nil(), app.library.jobs[0].id);
+        app.selected = Some(selected);
+        let input = app.library.tracks[0].input.clone();
+        let removed = app.library.jobs[1].id;
+        let _ = app.update(Message::Remove((Uuid::nil(), removed)));
+        assert!(input.is_file());
+        assert_eq!(app.library.tracks.len(), 1);
+        assert_eq!(app.library.jobs.len(), 1);
+        assert_eq!(app.library.jobs[0].id, selected.1);
+        assert_eq!(app.selected, Some(selected));
+        assert!(!dir.path().join("jobs").join(removed.to_string()).exists());
+    }
+
+    #[test]
     fn successful_removal_updates_manifest_and_removes_owned_audio() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
-        let key = app.selected.unwrap();
+        app.queue_master().unwrap();
+        app.running = false;
+        let key = (Uuid::nil(), app.library.jobs[0].id);
+        app.selected = Some(key);
         let input = app.library.tracks[0].input.clone();
         app.loaded = true;
-        app.active_key = Some(key);
+        app.active_key = Some((key.0, Some(key.1)));
         let _ = app.update(Message::Remove(key));
         assert!(app.error.is_none());
         assert!(app.library.tracks.is_empty());
@@ -1529,7 +1687,7 @@ mod tests {
     fn reanalyze_forces_fresh_analysis_for_items_already_waiting_in_the_queue() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
-        let key = app.selected.unwrap();
+        let key = (app.selected.unwrap().0, None);
         let source = dir.path().join("other.wav");
         std::fs::write(&source, b"other audio").unwrap();
         let other = library::import(dir.path(), source, Uuid::from_u128(1)).unwrap();
@@ -1539,14 +1697,14 @@ mod tests {
         let _ = app.update(Message::Analyze);
         assert_eq!(
             app.analysis_queue.iter().copied().collect::<Vec<_>>(),
-            vec![key]
+            vec![key, (key.0, Some(Uuid::nil()))]
         );
         assert!(
             app.force_analysis.contains(&key),
             "Reanalyze must bypass the cache even when already queued"
         );
         let _ = app.update(Message::Analyze);
-        assert_eq!(app.analysis_queue.len(), 1);
+        assert_eq!(app.analysis_queue.len(), 2);
         assert!(app.force_analysis.contains(&key));
     }
 
@@ -1622,8 +1780,13 @@ mod tests {
                     .visible_bounds()
                     .is_some()
             );
-            assert!(ui.find("Run mastering").unwrap().visible_bounds().is_some());
-            ui.click("Run mastering").unwrap();
+            assert!(
+                ui.find("Create variation")
+                    .unwrap()
+                    .visible_bounds()
+                    .is_some()
+            );
+            ui.click("Create variation").unwrap();
             assert!(!ui.into_messages().any(|m| matches!(m, Message::Master)));
             assert!(app.queue_master().is_err());
             let _ = app.update(Message::Edit(
@@ -1680,7 +1843,7 @@ mod tests {
                     .visible_bounds()
                     .is_some()
             );
-            ui.click("Run mastering").unwrap();
+            ui.click("Create variation").unwrap();
             assert!(ui.find("Show setting").is_err());
             let messages: Vec<_> = ui.into_messages().collect();
             assert!(!messages.iter().any(|m| matches!(m, Message::Master)));
@@ -1834,15 +1997,20 @@ mod tests {
     fn history_selection_defers_storage_errors_until_the_background_result() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        app.running = false;
+        app.library.jobs[0].status = Status::Succeeded;
+        app.library.jobs[0].output_hash = Some("cached".into());
         let blocked = dir.path().join("not-a-directory");
         std::fs::write(&blocked, b"keep").unwrap();
         app.save_worker = Some(library::SaveWorker::new(blocked).unwrap());
-        let path = app.library.tracks[0].input.clone();
+        let path = app.library.jobs[0].output.clone();
+        std::fs::write(&path, b"cached output").unwrap();
         app.prepared.insert(
             path.clone(),
             playback::test_audio(&[[0.2; 2]; 1000], Some(&path)),
         );
-        let _ = app.update(Message::Select((Uuid::from_u128(0), None)));
+        let _ = app.update(Message::Select((Uuid::nil(), app.library.jobs[0].id)));
         assert!(app.loaded);
         assert!(!app.loading);
         assert!(app.error.is_none());
@@ -1879,24 +2047,22 @@ mod tests {
         let audio = playback::test_audio(&[[0.5; 2]; 1000], Some(&path));
         app.loading = true;
         let _ = app.update(Message::Prepared(path.clone(), Ok(audio)));
-        assert_eq!(app.selected, Some((Uuid::from_u128(0), None)));
+        assert_eq!(app.selected, Some((Uuid::from_u128(0), Uuid::nil())));
         assert!(!app.loaded);
         assert!(app.loading);
         assert!(app.prepared.contains_key(&path));
     }
     #[test]
-    fn selecting_an_original_retargets_the_mastering_form() {
+    fn unknown_results_cannot_be_selected_in_history() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
-        let source = dir.path().join("another.wav");
-        std::fs::write(&source, b"another input").unwrap();
-        app.library
-            .tracks
-            .push(library::import(dir.path(), source, Uuid::from_u128(1)).unwrap());
-        let _ = app.update(Message::Select((Uuid::from_u128(1), None)));
-        assert_eq!(app.selected.map(|key| key.0), Some(Uuid::from_u128(1)));
         app.queue_master().unwrap();
-        assert_eq!(app.library.jobs[0].track_id, Uuid::from_u128(1));
+        let key = (Uuid::nil(), app.library.jobs[0].id);
+        let _ = app.update(Message::Select(key));
+        app.library.draft.loudness = "-11".into();
+        let _ = app.update(Message::Select((Uuid::nil(), Uuid::nil())));
+        assert_eq!(app.selected, Some(key));
+        assert_eq!(app.library.draft.loudness, "-11");
     }
     #[test]
     fn preferences_do_not_interrupt_active_jobs_or_leak_drafts_into_history() {
@@ -1977,7 +2143,7 @@ mod tests {
         let recorded = app.library.jobs[0].tools.backend.clone();
         let _ = app.update(Message::Select((
             app.library.jobs[0].track_id,
-            Some(app.library.jobs[0].id),
+            app.library.jobs[0].id,
         )));
         assert!(app.library.app_settings.backend.is_empty());
         assert!(app.library.app_settings.ffmpeg.is_empty());
@@ -1987,7 +2153,7 @@ mod tests {
         app.library.app_settings.cache = "explicit cache".into();
         let _ = app.update(Message::Select((
             app.library.jobs[0].track_id,
-            Some(app.library.jobs[0].id),
+            app.library.jobs[0].id,
         )));
         assert_eq!(app.library.app_settings.backend, "explicit engine");
         assert_eq!(app.library.app_settings.ffmpeg, "explicit ffmpeg");
@@ -2033,7 +2199,7 @@ mod tests {
         app.library.app_settings.export_dir = destination.display().to_string();
         let _ = app.update(Message::Select((
             Uuid::from_u128(0),
-            Some(app.library.jobs[0].id),
+            app.library.jobs[0].id,
         )));
         assert!(
             std::path::Path::new(&app.default_export(&app.library.jobs[0]))
@@ -2041,7 +2207,7 @@ mod tests {
         );
         let _ = app.update(Message::Select((
             app.library.jobs[0].track_id,
-            Some(app.library.jobs[0].id),
+            app.library.jobs[0].id,
         )));
         assert_eq!(app.library.app_settings.export_directory(), destination);
         app.queue_master().unwrap();
@@ -2060,7 +2226,7 @@ mod tests {
         );
         let _ = app.update(Message::Select((
             Uuid::from_u128(0),
-            Some(app.library.jobs[1].id),
+            app.library.jobs[1].id,
         )));
         assert!(
             std::path::Path::new(&app.default_export(&app.library.jobs[0]))
@@ -2079,7 +2245,7 @@ mod tests {
         app.running = false;
         let _ = app.update(Message::Select((
             Uuid::from_u128(0),
-            Some(app.library.jobs[0].id),
+            app.library.jobs[0].id,
         )));
         app.library.draft.loudness = "-12".into();
         app.library.draft.ceiling = "-1".into();
@@ -2099,7 +2265,7 @@ mod tests {
             ))
             .unwrap();
         assert!(changes.visible_bounds().is_some());
-        let run = ui.find("Run mastering").unwrap();
+        let run = ui.find("Create variation").unwrap();
         assert!(run.visible_bounds().is_some());
         assert!(run.bounds().y > changes.bounds().y);
         assert!(run.bounds().y - changes.bounds().y < 220.);
@@ -2122,7 +2288,7 @@ mod tests {
         app.queue_master().unwrap();
         let job = app.library.jobs[0].clone();
         let _ = app.update(Message::Edit(Field::Loudness, "-".into()));
-        let _ = app.update(Message::Select((job.track_id, Some(job.id))));
+        let _ = app.update(Message::Select((job.track_id, job.id)));
         assert!(app.numeric_edits.is_empty());
         assert!(app.numeric_errors.is_empty());
         assert_eq!(
@@ -2152,14 +2318,14 @@ mod tests {
         assert_eq!(app.library.draft.loudness, "-11");
         let _ = app.update(Message::Select((
             Uuid::from_u128(0),
-            Some(app.library.jobs[0].id),
+            app.library.jobs[0].id,
         )));
         assert_eq!(app.library.draft.loudness, "-9");
         assert!(app.output_side);
         let _ = app.update(Message::Side(false));
         assert_eq!(
             app.selected,
-            Some((Uuid::from_u128(0), Some(app.library.jobs[0].id)))
+            Some((Uuid::from_u128(0), app.library.jobs[0].id))
         );
         assert!(!app.output_side);
     }
@@ -2186,7 +2352,7 @@ mod tests {
         app.library.draft.loudness = "-10".into();
         let _ = app.update(Message::Select((
             Uuid::from_u128(0),
-            Some(app.library.jobs[1].id),
+            app.library.jobs[1].id,
         )));
         app.library.draft.loudness = "-10".into();
         let _ = app.update(Message::Compare(
@@ -2214,7 +2380,7 @@ mod tests {
         );
         let _ = app.update(Message::Select((
             Uuid::from_u128(0),
-            Some(app.library.jobs[0].id),
+            app.library.jobs[0].id,
         )));
         assert_eq!(app.comparison_job, None);
         assert_eq!(app.comparison_label(), "Original");
@@ -2225,11 +2391,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
         app.queue_master().unwrap();
+        let selected = (Uuid::nil(), app.library.jobs[0].id);
+        app.selected = Some(selected);
         assert_eq!(app.selected.map(|key| key.0), Some(Uuid::nil()));
         app.library.draft.loudness = "-11".into();
         app.queue_master().unwrap();
         assert_eq!(app.library.jobs[1].config.loudness, -11.);
-        assert_eq!(app.selected, Some((Uuid::from_u128(0), None)));
+        assert_eq!(app.selected, Some(selected));
     }
 
     #[test]
@@ -2285,7 +2453,7 @@ mod tests {
         let mut app = app_with_track(dir.path());
         app.queue_master().unwrap();
         app.library.jobs[0].status = Status::Succeeded;
-        app.selected = Some((app.library.tracks[0].id, Some(app.library.jobs[0].id)));
+        app.selected = Some((app.library.tracks[0].id, app.library.jobs[0].id));
         for count in [0, 5, 8] {
             app.library.draft = settings_from_config(&app.library.jobs[0].config);
             let values = [
@@ -2344,7 +2512,11 @@ mod tests {
                     }
                     ui.click(Id::new("number-Loudness")).unwrap();
                     ui.typewrite("0");
-                    let run = ui.find("Run mastering").unwrap().visible_bounds().unwrap();
+                    let run = ui
+                        .find("Create variation")
+                        .unwrap()
+                        .visible_bounds()
+                        .unwrap();
                     assert!(run.height >= 20.);
                     // Probe near both edges of the 40px button, beyond its text.
                     for y in [run.center().y - 18., run.center().y, run.center().y + 18.] {
@@ -2421,14 +2593,8 @@ mod tests {
                     .visible_bounds()
                     .is_some()
             );
-            assert!(
-                ui.find("Drop audio anywhere in window")
-                    .unwrap()
-                    .bounds()
-                    .height
-                    <= 18.
-            );
-            ui.click("Run mastering").unwrap();
+            assert!(ui.find("Drop audio to master").unwrap().bounds().height <= 18.);
+            ui.click("Create variation").unwrap();
             assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
         }
     }
@@ -2477,7 +2643,7 @@ mod tests {
         ui.find("Professionality2").unwrap();
         ui.find("Dissonance").unwrap();
         assert!(ui.find("Ear Damage").is_err());
-        ui.click("Run mastering").unwrap();
+        ui.click("Create variation").unwrap();
         assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
     }
 
@@ -2527,7 +2693,7 @@ mod tests {
         );
         ui.find("Use reference audio").unwrap();
         ui.find("Browse…").unwrap();
-        ui.click("Run mastering").unwrap();
+        ui.click("Create variation").unwrap();
         assert!(!ui.into_messages().any(|m| matches!(m, Message::Master)));
     }
 
@@ -2554,7 +2720,7 @@ mod tests {
         app.running = false;
         let _ = app.update(Message::Select((
             Uuid::from_u128(0),
-            Some(app.library.jobs[0].id),
+            app.library.jobs[0].id,
         )));
         assert_eq!(app.reference_pending.as_ref(), Some(&path));
         let _ = app.update(Message::ReferenceLoaded(
@@ -2565,7 +2731,10 @@ mod tests {
             app.reference_analysis().unwrap().number("loudness"),
             Some(-12.)
         );
-        let _ = app.update(Message::Select((Uuid::from_u128(0), None)));
+        app.library.draft.use_reference = false;
+        app.queue_master().unwrap();
+        app.running = false;
+        let _ = app.update(Message::Select((Uuid::nil(), app.library.jobs[1].id)));
         let _ = app.update(Message::ReferenceLoaded(
             path.clone(),
             analysis::Analysis::read_report(path.clone()),
@@ -2600,7 +2769,7 @@ mod tests {
         )
         .unwrap();
         std::fs::remove_dir_all(app.library.tracks[0].input.parent().unwrap()).unwrap();
-        let _ = app.update(Message::Select((job.track_id, Some(job.id))));
+        let _ = app.update(Message::Select((job.track_id, job.id)));
         app.library.save(dir.path()).unwrap();
         let restored = Library::load(dir.path()).unwrap();
         assert_eq!(
@@ -2623,15 +2792,22 @@ mod tests {
         let messages = {
             let mut ui = iced_test::simulator(app.view());
             ui.find("日本語 mix.wav").unwrap();
-            let older = ui
-                .find(app.library.job_label(&app.library.jobs[0]))
-                .unwrap();
-            let newer = ui
-                .find(app.library.job_label(&app.library.jobs[1]))
-                .unwrap();
-            assert!(newer.bounds().y < older.bounds().y);
-            ui.click(app.library.job_label(&app.library.jobs[0]))
-                .unwrap();
+            let row_id = |job: &Job| {
+                iced::widget::Id::from(format!("history-{}-{:?}", job.track_id, job.id))
+            };
+            let older = ui.find(row_id(&app.library.jobs[0])).unwrap().bounds();
+            let newer = ui.find(row_id(&app.library.jobs[1])).unwrap().bounds();
+            assert!(newer.y < older.y);
+            assert_eq!(newer.x, older.x);
+            ui.find("Time").unwrap();
+            ui.find("Input audio").unwrap();
+            ui.click(row_id(&app.library.jobs[0])).unwrap();
+            if let Ok(path) = std::env::var("HISTORY_REVIEW_IMAGE") {
+                ui.snapshot(&theme::Theme)
+                    .unwrap()
+                    .matches_image(path)
+                    .unwrap();
+            }
             ui.into_messages()
         };
         for message in messages {
@@ -2639,24 +2815,50 @@ mod tests {
         }
         assert_eq!(
             app.selected,
-            Some((Uuid::from_u128(0), Some(app.library.jobs[0].id)))
+            Some((Uuid::from_u128(0), app.library.jobs[0].id))
         );
     }
+    #[test]
+    fn history_orders_candidates_across_input_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.library.tracks[0].added = 10;
+        let mut second = app.library.tracks[0].clone();
+        second.id = Uuid::from_u128(2);
+        second.added = 30;
+        app.library.tracks.push(second);
+        app.queue_master().unwrap();
+        app.running = false;
+        app.queue_master().unwrap();
+        app.library.jobs[0].track_id = Uuid::from_u128(2);
+        app.library.jobs[0].created_at = chrono::DateTime::from_timestamp(40, 0);
+        app.library.jobs[1].created_at = chrono::DateTime::from_timestamp(50, 0);
+        assert_eq!(
+            app.history_keys(),
+            vec![
+                (Uuid::nil(), app.library.jobs[1].id),
+                (Uuid::from_u128(2), app.library.jobs[0].id),
+            ]
+        );
+    }
+
     #[test]
     fn finished_background_work_does_not_change_selection() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
         app.queue_master().unwrap();
         app.running = false;
+        let selected = (Uuid::nil(), app.library.jobs[0].id);
+        app.selected = Some(selected);
         let _ = app.update(Message::Completed(
             app.library.jobs[0].id,
             Ok("checksum".into()),
         ));
-        assert_eq!(app.selected, Some((Uuid::from_u128(0), None)));
+        assert_eq!(app.selected, Some(selected));
         assert_eq!(app.library.jobs[0].status, Status::Succeeded);
         app.save();
         let loaded = Library::load(dir.path()).unwrap();
-        assert_eq!(loaded.selected, Some((Uuid::from_u128(0), None)));
+        assert_eq!(loaded.selected, Some((selected.0, Some(selected.1))));
         assert_eq!(loaded.jobs[0].output_hash.as_deref(), Some("checksum"));
     }
     #[test]
@@ -2669,7 +2871,7 @@ mod tests {
         let created = app.library.jobs[0].created_at;
         let output = app.library.jobs[0].output.clone();
         let config = serde_json::to_value(&app.library.jobs[0].config).unwrap();
-        let _ = app.update(Message::Select((Uuid::nil(), Some(id))));
+        let _ = app.update(Message::Select((Uuid::nil(), id)));
         let export = app.default_export(&app.library.jobs[0]);
         for memo in ["低域", "低域控えめ", "今のところこれが良い"] {
             let _ = app.update(Message::EditMemo(id, memo.into()));
@@ -2685,11 +2887,11 @@ mod tests {
         assert_eq!(serde_json::to_value(&saved.jobs[0].config).unwrap(), config);
         assert_eq!(saved.jobs[0].status, Status::Waiting);
         assert_eq!(app.default_export(&app.library.jobs[0]), export);
-        assert_eq!(app.selected, Some((Uuid::nil(), Some(id))));
+        assert_eq!(app.selected, Some((Uuid::nil(), id)));
         assert_eq!(saved.jobs.len(), 1);
         assert_eq!(id.get_version(), Some(uuid::Version::Random));
         let _ = app.update(Message::EditMemo(id, String::new()));
-        let _ = app.update(Message::Select((Uuid::nil(), None)));
+        let _ = app.update(Message::SaveMemo);
         assert_eq!(Library::load(dir.path()).unwrap().jobs[0].memo, "");
     }
 

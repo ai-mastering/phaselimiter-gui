@@ -58,4 +58,4 @@ PY
         -C link-arg=-fuse-ld=lld \
         -C "link-arg=-Wl,-platform_version,macos,$MACOSX_DEPLOYMENT_TARGET,$sdk_version"
 fi
-python3 script/package-macos.py "$target"
+python3 script/package-macos.py "$target" "$@"

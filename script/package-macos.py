@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Package a previously built GUI; backend/resources can be bundled separately."""
+import argparse
 import pathlib
 import shutil
 import subprocess
@@ -9,11 +10,16 @@ import zipfile
 from package_common import cargo_target_directory, write_macos_plist
 
 root = pathlib.Path(__file__).resolve().parent.parent
-target = sys.argv[1] if len(sys.argv) > 1 else "x86_64-apple-darwin"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("target", nargs="?", default="x86_64-apple-darwin")
+parser.add_argument("--output", type=pathlib.Path)
+parser.add_argument("--no-zip", action="store_true")
+args = parser.parse_args()
+target = args.target
 binary = cargo_target_directory() / target / "release" / "phaselimiter-gui"
 if not binary.is_file():
     raise SystemExit(f"Build the executable first: {binary}")
-destination = root / "dist" / target
+destination = args.output or root / "dist" / target
 app = destination / "Phaselimiter.app"
 macos = app / "Contents" / "MacOS"
 resources = app / "Contents" / "Resources"
@@ -25,10 +31,11 @@ shutil.copy2(root / "LICENSE", resources / "LICENSE")
 subprocess.run([sys.executable, str(root / "script/third-party-licenses.py"), target,
                 str(resources / "THIRD_PARTY_LICENSES.txt")], cwd=root, check=True)
 write_macos_plist(app)
-archive = destination / "Phaselimiter-macos.zip"
-with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
-    for path in sorted(app.rglob("*")):
-        if path.is_file():
-            output.write(path, path.relative_to(destination))
 print(app)
-print(archive)
+if not args.no_zip:
+    archive = destination / "Phaselimiter-macos.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        for path in sorted(app.rglob("*")):
+            if path.is_file():
+                output.write(path, path.relative_to(destination))
+    print(archive)

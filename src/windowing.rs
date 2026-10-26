@@ -150,7 +150,7 @@ mod tests {
             iced::Size::new(1000., 550.),
             app.window_view(app.main_window),
         );
-        ui.click("Add audio…").unwrap();
+        ui.click("Master audio…").unwrap();
         let before = ui.find("Loudness").unwrap().bounds();
         let fields = ui
             .find(iced::widget::Id::new("mastering-fields"))

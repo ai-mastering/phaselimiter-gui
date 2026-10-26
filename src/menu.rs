@@ -22,7 +22,7 @@ pub enum Event {
     LeaveRoot(usize),
     Select(Option<usize>),
     LeaveItem(usize),
-    Context(crate::AudioKey),
+    Context(crate::ResultKey),
     Pointer(iced::Point),
     Close,
     Activate(usize),
@@ -67,12 +67,12 @@ impl App {
     fn menu_entries(&self, index: usize) -> Vec<Entry> {
         let mut entries = match index {
             0 => vec![
-                Entry::new("Add audio…", 'a', Some(Message::BrowseAudio)),
+                Entry::new("Master audio…", 'a', Some(Message::BrowseAudio)),
                 Entry::new(
                     if self.show_audio_path {
                         "Hide path input"
                     } else {
-                        "Add audio from path…"
+                        "Master audio from path…"
                     },
                     'p',
                     Some(Message::ToggleAudioPath),
@@ -648,7 +648,7 @@ mod tests {
                 .matches_image(format!("{directory}/menu.png"))
                 .unwrap();
         }
-        ui.click("Add audio from path…").unwrap();
+        ui.click("Master audio from path…").unwrap();
         for message in ui.into_messages() {
             let _ = app.update(message);
         }
@@ -773,7 +773,7 @@ mod tests {
         assert_eq!(app.menu.open, Some(0));
         assert!(app.menu.selected.is_none());
         let mut ui = iced_test::simulator(app.view());
-        let item = ui.find("Add audio from path…").unwrap().bounds();
+        let item = ui.find("Master audio from path…").unwrap().bounds();
         let exit = ui.find("Exit").unwrap().bounds();
         assert!(exit.y - item.y < 60.);
         assert!(ui.find("Ctrl+O").unwrap().bounds().x > item.x);
@@ -798,13 +798,21 @@ mod tests {
             root: Some(dir.path().to_path_buf()),
             ..App::default()
         };
+        let mut job = crate::model::test_job(
+            track.input.clone(),
+            dir.path().join("output.wav"),
+            app.library.draft.parse().unwrap(),
+            1,
+        );
+        job.track_id = track.id;
+        app.library.jobs.push(job);
         app.library.tracks.push(track);
         let mut ui = iced_test::Simulator::with_size(
             Default::default(),
             iced::Size::new(640., 480.),
             app.view(),
         );
-        let target = ui.find("Original").unwrap().bounds().center();
+        let target = ui.find("Date unknown").unwrap().bounds().center();
         ui.point_at(target);
         ui.simulate([iced::Event::Mouse(mouse::Event::ButtonPressed(
             mouse::Button::Right,
