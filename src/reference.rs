@@ -193,7 +193,12 @@ impl App {
         if self.draft_reference.due.is_some() || self.draft_reference.active {
             controls = controls.push(text("Analyzing reference…").size(12));
         } else if let Some(Err(error)) = &self.draft_reference.report {
-            controls = controls.push(text(error).size(12).color(theme::ERROR));
+            controls = controls.push(
+                text(error)
+                    .size(12)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    .color(theme::ERROR),
+            );
             if self.draft_reference.source_stamp.is_some() {
                 controls = controls.push(
                     button("Retry")

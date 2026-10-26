@@ -64,6 +64,7 @@ impl App {
             } else {
                 // New errors remain copyable even before the next state refresh.
                 text(error.clone())
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .size(12)
                     .color(crate::theme::ERROR)
                     .width(iced::Fill)
