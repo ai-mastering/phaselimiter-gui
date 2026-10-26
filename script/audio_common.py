@@ -19,11 +19,8 @@ def run(command, **kwargs):
 
 
 def digest(path):
-    result = hashlib.sha256()
     with Path(path).open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            result.update(block)
-    return result.hexdigest()
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def download(asset, cache):
@@ -112,9 +109,8 @@ class Build:
                 extract_deb(archive, extract, include)
             else:
                 extract_tar(archive, extract)
-            contents = destination / "unpacked"
-            children = list(contents.iterdir())
-            root = children[0] if len(children) == 1 and children[0].is_dir() else contents
+            children = list(extract.iterdir())
+            root = children[0] if len(children) == 1 and children[0].is_dir() else extract
             extracted = {"sha256": asset["sha256"], "root": str(root.relative_to(destination))}
             marker.write_text(json.dumps(extracted))
         return destination / extracted["root"]

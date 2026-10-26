@@ -3,6 +3,7 @@ import json
 import plistlib
 import subprocess
 import tomllib
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,3 +32,10 @@ def write_macos_plist(app):
             'LSMinimumSystemVersion': package['metadata']['macos']['minimum-system-version'],
             'NSHighResolutionCapable': True,
         }, output)
+
+
+def zip_directory(archive, directory):
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+        for path in sorted(directory.rglob("*")):
+            if path.is_file():
+                output.write(path, path.relative_to(directory.parent))

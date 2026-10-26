@@ -5,9 +5,8 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import zipfile
 
-from package_common import cargo_target_directory, write_macos_plist
+from package_common import cargo_target_directory, write_macos_plist, zip_directory
 
 root = pathlib.Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
@@ -34,8 +33,5 @@ write_macos_plist(app)
 print(app)
 if not args.no_zip:
     archive = destination / "Phaselimiter-macos.zip"
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
-        for path in sorted(app.rglob("*")):
-            if path.is_file():
-                output.write(path, path.relative_to(destination))
+    zip_directory(archive, app)
     print(archive)

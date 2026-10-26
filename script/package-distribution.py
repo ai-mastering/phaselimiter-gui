@@ -9,11 +9,10 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import zipfile
 
 from audio_common import Build, PINS, ROOT, digest, download, run
 from bundle_runtime import TOOLS, audit, collect
-from package_common import cargo_target_directory, write_macos_plist
+from package_common import cargo_target_directory, write_macos_plist, zip_directory
 
 
 def notices(build, stage):
@@ -132,10 +131,7 @@ def package(build, target, sources=False):
             run(["readelf", "--version-info", executable_dir / gui.name], stdout=output)
     archive = destination / ("Phaselimiter-" + target + (".zip" if build.is_mac or build.is_windows else ".tar.gz"))
     if archive.suffix == ".zip":
-        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
-            for path in sorted(payload.rglob("*")):
-                if path.is_file():
-                    output.write(path, path.relative_to(destination))
+        zip_directory(archive, payload)
     else:
         with tarfile.open(archive, "w:gz") as output:
             output.add(payload, arcname=payload.name)

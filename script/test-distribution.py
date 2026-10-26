@@ -4,7 +4,6 @@ import argparse
 import math
 import os
 from pathlib import Path
-import shutil
 import struct
 import subprocess
 import sys

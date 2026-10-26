@@ -191,14 +191,7 @@ jobs:
         timeout-minutes: 20
         run: python script/test-audio.py --phase cache
       - name: Package complete portable distribution
-        if: runner.os != 'Windows'
-        run: |
-          extra=()
-          if [[ "$RUNNER_OS" == Linux ]]; then extra+=(--sources); fi
-          python script/package-distribution.py --target '${{ matrix.target }}' ${extra[@]+"${extra[@]}"}
-      - name: Package complete Windows portable distribution
-        if: runner.os == 'Windows'
-        run: python script/package-distribution.py --target ${{ matrix.target }}
+        run: python script/package-distribution.py --target ${{ matrix.target }} ${{ runner.os == 'Linux' && '--sources' || '' }}
       - name: Test extracted distribution without development runtime paths
         run: |
           python script/test-distribution.py --archive dist/${{ matrix.target }}/Phaselimiter-${{ matrix.target }}.${{ runner.os == 'Linux' && 'tar.gz' || 'zip' }}

@@ -2,7 +2,6 @@
 """Run upstream tests and generate a native cache, in separately observable phases."""
 import argparse
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
