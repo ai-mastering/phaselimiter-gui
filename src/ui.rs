@@ -4,47 +4,40 @@ use iced::widget::{column, responsive};
 
 const SETTINGS_WIDTH: f32 = 330.;
 const HISTORY_WIDTH: f32 = 215.;
-const WIDE_WIDTH: f32 = 1200.;
 
 impl App {
     pub(super) fn view(&self) -> Element<'_, Message> {
-        responsive(|size| self.workspace_view(size.width)).into()
+        // Only menu popup placement needs the viewport dimensions.
+        let content: Element<'_, Message> =
+            responsive(|size| self.menu_layer(self.workspace_view(), size)).into();
+        let modal = self.preferences.is_some();
+        let content: Element<'_, Message> = if modal {
+            let shield = iced::widget::mouse_area(
+                container(iced::widget::space().width(Fill).height(Fill)).style(|_: &Theme| {
+                    container::Style {
+                        background: Some(iced::Color::from_rgba(0., 0., 0., 0.06).into()),
+                        ..Default::default()
+                    }
+                }),
+            )
+            .on_press(Message::Preferences(preferences::Event::Focus))
+            .on_right_press(Message::Preferences(preferences::Event::Focus))
+            .on_scroll(|_| Message::Preferences(preferences::Event::Focus));
+            iced::widget::stack![content, shield].into()
+        } else {
+            iced::widget::stack![content].into()
+        };
+        content.map(move |message| {
+            if modal {
+                Message::Preferences(preferences::Event::Focus)
+            } else {
+                message
+            }
+        })
     }
 
-    fn workspace_view(&self, width: f32) -> Element<'_, Message> {
-        let wide = width >= WIDE_WIDTH;
-        let mut header = row![
-            text("PHASELIMITER")
-                .size(15)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-        ]
-        .spacing(8)
-        .align_y(iced::Center);
-        header = header
-            .push(
-                button("Add audio…")
-                    .on_press(Message::BrowseAudio)
-                    .style(theme::normal)
-                    .padding(6),
-            )
-            .push(
-                button(if self.show_audio_path {
-                    "Hide path input"
-                } else {
-                    "Add from path…"
-                })
-                .on_press(Message::ToggleAudioPath)
-                .style(theme::normal)
-                .padding(6),
-            )
-            .push(iced::widget::Space::new().width(Fill))
-            .push(
-                button("App settings")
-                    .on_press(Message::ToggleAppSettings)
-                    .style(theme::normal)
-                    .padding(6),
-            );
-        let mut body = column![header].spacing(8);
+    fn workspace_view(&self) -> Element<'_, Message> {
+        let mut body = column![self.menu_bar()].spacing(8);
         if self.show_audio_path {
             body = body.push(
                 row![
@@ -58,23 +51,6 @@ impl App {
                         .padding(6),
                 ]
                 .spacing(6),
-            );
-        }
-        if self.hovering {
-            body = body.push(
-                text("Release to import audio.")
-                    .size(13)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            );
-        }
-        if let Some(error) = &self.error {
-            body = body.push(self.error_view(error.clone()));
-        }
-        if let Some(notice) = &self.notice {
-            body = body.push(
-                text(notice)
-                    .size(12)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             );
         }
         let mut workspace = row![self.history_view(), rule::vertical(1)]
@@ -108,72 +84,43 @@ impl App {
             center = center.push(title);
             center = center.push(self.transport_view());
         }
-        if !wide {
-            center = center.push(
-                row![
-                    button("Analysis").on_press(Message::ShowAnalysis).style(
-                        if !self.show_settings && !self.show_app_settings {
-                            theme::selected
-                        } else {
-                            theme::normal
-                        }
-                    ),
-                    button("Mastering settings")
-                        .on_press(Message::ShowMastering)
-                        .style(if self.show_settings && !self.show_app_settings {
-                            theme::selected
-                        } else {
-                            theme::normal
-                        }),
-                ]
-                .spacing(6),
-            );
-        }
-        if !wide && (self.show_settings || self.show_app_settings) {
-            center = center.push(self.settings_panel(width - HISTORY_WIDTH - 32. >= 560.));
-        } else {
-            center = center.push(
-                scrollable(self.analysis_view())
-                    .spacing(4)
-                    .height(Fill)
-                    .width(Fill),
-            );
-        }
-        workspace = workspace.push(container(center).clip(true).width(Fill).height(Fill));
-        if wide {
-            workspace = workspace.push(rule::vertical(1)).push(
-                container(self.settings_panel(false))
+        center = center.push(
+            scrollable(self.analysis_view())
+                .spacing(4)
+                .height(Fill)
+                .width(Fill),
+        );
+        workspace = workspace
+            .push(container(center).clip(true).width(Fill).height(Fill))
+            .push(rule::vertical(1))
+            .push(
+                container(self.settings_panel())
                     .clip(true)
                     .width(SETTINGS_WIDTH)
                     .height(Fill),
             );
-        }
-        body = body.push(workspace).push(self.queue_view());
+        body = body.push(workspace).push(self.status_bar());
         container(body).padding(10).height(Fill).width(Fill).into()
     }
 
     fn history_view(&self) -> Element<'_, Message> {
         let mut history = column![].spacing(8);
-        if self.library.tracks.is_empty() {
-            history = history.push(
-                text("Drop audio to begin.")
-                    .size(13)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            );
-        }
         for track in self.library.tracks.iter().rev() {
             let key = (track.id, None);
             let mut entries = column![
                 compact_text(track.name.clone(), source_tooltip(track), 14., true),
-                button("Original")
-                    .on_press(Message::Select(key))
-                    .width(Fill)
-                    .padding(5)
-                    .style(if self.selected == Some(key) {
-                        theme::selected
-                    } else {
-                        theme::normal
-                    }),
+                iced::widget::mouse_area(
+                    button("Original")
+                        .on_press(Message::Select(key))
+                        .width(Fill)
+                        .padding(5)
+                        .style(if self.selected == Some(key) {
+                            theme::selected
+                        } else {
+                            theme::normal
+                        })
+                )
+                .on_right_press(Message::Menu(menu::Event::Context(key))),
             ]
             .spacing(4);
             let jobs: Vec<_> = self
@@ -188,22 +135,28 @@ impl App {
                 let failed = matches!(job.status, Status::Failed | Status::Interrupted);
                 let label = if failed { format!("! {label}") } else { label };
                 entries = entries.push(
-                    button(
-                        container(compact_text(label.clone(), job.memo.clone(), 12., false)).style(
-                            move |_| iced::widget::container::Style {
-                                text_color: Some(if failed { theme::ERROR } else { theme::LABEL }),
-                                ..Default::default()
-                            },
-                        ),
+                    iced::widget::mouse_area(
+                        button(
+                            container(compact_text(label.clone(), job.memo.clone(), 12., false))
+                                .style(move |_| iced::widget::container::Style {
+                                    text_color: Some(if failed {
+                                        theme::ERROR
+                                    } else {
+                                        theme::LABEL
+                                    }),
+                                    ..Default::default()
+                                }),
+                        )
+                        .width(Fill)
+                        .padding(5)
+                        .style(if self.selected == Some(key) {
+                            theme::selected
+                        } else {
+                            theme::normal
+                        })
+                        .on_press(Message::Select(key)),
                     )
-                    .width(Fill)
-                    .padding(5)
-                    .style(if self.selected == Some(key) {
-                        theme::selected
-                    } else {
-                        theme::normal
-                    })
-                    .on_press(Message::Select(key)),
+                    .on_right_press(Message::Menu(menu::Event::Context(key))),
                 );
                 if job.status == Status::Processing {
                     entries = entries.push(progress_bar(0.0..=1.0, job.progress).girth(3));
@@ -211,33 +164,16 @@ impl App {
             }
             history = history.push(entries).push(rule::horizontal(1));
         }
-        let mut pane = column![
-            text("Audio & history")
-                .size(15)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+        let pane = column![
+            text("Audio & history").size(15),
+            button("Add audio…")
+                .on_press(Message::BrowseAudio)
+                .width(Fill)
+                .padding(6),
+            text("Drop audio anywhere in window").size(12),
             scrollable(history).spacing(4).height(Fill)
         ]
         .spacing(8);
-        if self.importing > 0 {
-            pane = pane.push(
-                text(format!("Importing {}…", self.importing))
-                    .size(12)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            );
-        }
-        if let Some(key) = self.selected {
-            pane = pane
-                .push(
-                    button("Master this input")
-                        .on_press(Message::Compose)
-                        .width(Fill),
-                )
-                .push(
-                    button("Remove selected")
-                        .on_press(Message::Remove(key))
-                        .style(theme::normal),
-                );
-        }
         container(pane)
             .clip(true)
             .width(HISTORY_WIDTH)
@@ -297,8 +233,8 @@ impl App {
                 .label("Match loudness")
                 .on_toggle(Message::Equalize),
         );
-        let mut transport = column![
-            controls,
+        let mut transport = column![controls];
+        transport = transport.push(
             canvas(plots::Plot {
                 input: self
                     .listening_analysis()
@@ -309,39 +245,39 @@ impl App {
                 logarithmic: false,
                 x_decibels: false,
                 position: (self.position / self.duration.max(0.001)) as f32,
-                region: self.region.map(|(a, b)| (
-                    (a / self.duration.max(0.001)) as f32,
-                    (b / self.duration.max(0.001)) as f32
-                )),
+                region: self.region.map(|(a, b)| {
+                    (
+                        (a / self.duration.max(0.001)) as f32,
+                        (b / self.duration.max(0.001)) as f32,
+                    )
+                }),
             })
             .width(Fill)
             .height(65),
-            row![
-                slider(
-                    0.0..=self.duration.max(0.001),
-                    self.position.min(self.duration),
-                    Message::Seek
-                )
-                .step(0.05),
-                text(format!(
-                    "{} / {}",
-                    clock(self.position),
-                    clock(self.duration)
-                ))
-                .size(12)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            ]
+        );
+        transport = transport
+            .push(
+                row![
+                    slider(
+                        0.0..=self.duration.max(0.001),
+                        self.position.min(self.duration),
+                        Message::Seek
+                    )
+                    .step(0.05),
+                    text(format!(
+                        "{} / {}",
+                        clock(self.position),
+                        clock(self.duration)
+                    ))
+                    .size(12),
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            )
+            .spacing(5);
+        let mut loop_row = row![text("Click: seek · Drag: loop").size(11)]
             .spacing(8)
-            .align_y(iced::Center),
-        ]
-        .spacing(5);
-        let mut loop_row = row![
-            text("Click: seek · Drag: loop")
-                .size(11)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-        ]
-        .spacing(8)
-        .align_y(iced::Center);
+            .align_y(iced::Center);
         if let Some((a, b)) = self.region {
             loop_row = loop_row
                 .push(
@@ -357,26 +293,6 @@ impl App {
                 );
         }
         transport = transport.push(loop_row);
-        if self.loading {
-            transport = transport.push(
-                text("Preparing selection · current audio continues playing")
-                    .size(12)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            );
-        } else if self.loaded && self.listening_key() != self.active_key {
-            transport = transport.push(
-                text("Selected audio unavailable · playing previous selection")
-                    .size(12)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            );
-        }
-        if self.equalize && self.listening_analysis().is_none() {
-            transport = transport.push(
-                text("Loudness matching awaits analysis.")
-                    .size(12)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            );
-        }
         transport.into()
     }
 
@@ -579,44 +495,6 @@ impl App {
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             );
         }
-        for (label, analysis) in [
-            ("Original", track.analysis.as_ref()),
-            ("Compare A", baseline.and_then(|j| j.analysis.as_ref())),
-            ("Selected", job.and_then(|j| j.analysis.as_ref())),
-            ("Reference", reference),
-        ] {
-            if let Some(error) = analysis.and_then(analysis::Analysis::sound_quality_error) {
-                detail = detail.push(self.error_view(format!("{label} Professionality: {error}")));
-            }
-        }
-        for (key, error) in [
-            ((track.id, None), track.analysis_error.as_ref()),
-            (
-                (track.id, job.map(|j| j.id)),
-                job.and_then(|j| j.analysis_error.as_ref()),
-            ),
-        ]
-        .into_iter()
-        .take(if job.is_some() { 2 } else { 1 })
-        {
-            if self.analyzing == Some(key) {
-                detail = detail.push(
-                    text("Analyzing…")
-                        .size(12)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                );
-            }
-            if let Some(error) = error {
-                detail = detail.push(self.error_view(format!(
-                    "{} analysis: {error}",
-                    if key.1.is_some() {
-                        "Selected"
-                    } else {
-                        "Original"
-                    }
-                )));
-            }
-        }
         if has_reference {
             let name = self.reference_name();
             detail = detail.push(compact_text(
@@ -626,16 +504,6 @@ impl App {
                 12.,
                 true,
             ));
-            if let Some((_, Err(error))) = &self.reference_report {
-                detail = detail
-                    .push(self.error_view(format!("Reference analysis unavailable: {error}")));
-            } else if reference.is_none() {
-                detail = detail.push(
-                    text("Loading reference analysis…")
-                        .size(12)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                );
-            }
         }
         let mut tabs = row![].spacing(4);
         for kind in plots::Kind::ALL {
@@ -818,25 +686,18 @@ impl App {
             .into()
     }
 
-    fn settings_panel(&self, wide_form: bool) -> Element<'_, Message> {
-        if self.show_app_settings {
-            return column![
-                text("Application settings")
-                    .size(15)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                scrollable(self.app_settings_view()).spacing(4).height(Fill),
-            ]
-            .spacing(8)
-            .height(Fill)
-            .into();
-        }
+    fn settings_panel(&self) -> Element<'_, Message> {
         let target = self.selected.map(|k| k.0);
         let track = self.library.tracks.iter().find(|t| Some(t.id) == target);
+        let mut fields = column![self.mastering_settings_view()].spacing(8);
+        if self.show_changes
+            && let Some(job) = self.job()
+        {
+            fields = fields.push(self.run_changes_details(job));
+        }
         let mut panel = column![
-            text("Mastering settings")
-                .size(15)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            scrollable(self.mastering_settings_view(wide_form))
+            text("Mastering settings").size(15),
+            scrollable(fields)
                 .id("mastering-fields")
                 .spacing(4)
                 .height(Fill)
@@ -856,13 +717,6 @@ impl App {
                 None
             }
         });
-        if let Some((_, reason)) = &issue {
-            panel = panel.push(
-                text(format!("Cannot run mastering: {reason}"))
-                    .size(12)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            );
-        }
         panel
             .push(
                 button(if self.active.is_some() {
@@ -872,6 +726,7 @@ impl App {
                 })
                 .on_press_maybe(issue.is_none().then_some(Message::Master))
                 .width(Fill)
+                .height(40)
                 .padding(9),
             )
             .into()
@@ -879,15 +734,25 @@ impl App {
 
     fn run_changes_view<'a>(&'a self, job: &'a Job) -> Element<'a, Message> {
         let differences = settings_differences(&job.config, &self.library.draft);
-        let height = (differences.len().max(1) as f32 * 58.).min(160.);
-        let mut changes = column![].spacing(3);
         if differences.is_empty() {
-            changes = changes.push(
-                text("No mastering parameter changes")
-                    .size(12)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            );
+            return text("No mastering parameter changes").size(12).into();
         }
+        let count = differences.len();
+        let heading = button(
+            text(format!(
+                "{} Changes · {count}",
+                if self.show_changes { "▾" } else { "▸" }
+            ))
+            .size(13),
+        )
+        .on_press(Message::ToggleChanges)
+        .style(theme::normal);
+        heading.into()
+    }
+
+    fn run_changes_details<'a>(&'a self, job: &'a Job) -> Element<'a, Message> {
+        let differences = settings_differences(&job.config, &self.library.draft);
+        let mut changes = column![].spacing(3);
         for (label, mut old, mut new) in differences {
             if label == "Reference report" {
                 old = self.reference_name();
@@ -908,18 +773,10 @@ impl App {
                 .spacing(2),
             );
         }
-        column![
-            rule::horizontal(1),
-            text("Changes")
-                .size(13)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            scrollable(changes).spacing(4).height(height),
-        ]
-        .spacing(4)
-        .into()
+        changes.into()
     }
 
-    fn mastering_settings_view(&self, wide_form: bool) -> Element<'_, Message> {
+    fn mastering_settings_view(&self) -> Element<'_, Message> {
         let target_label = match self.library.draft.reference_mode {
             ReferenceMode::Loudness | ReferenceMode::YoutubeLoudness => "Target level (LUFS)",
             _ => "Target level (dBFS)",
@@ -963,13 +820,7 @@ impl App {
         ]
         .spacing(7)
         .width(Fill);
-        let primary: Element<'_, Message> = if wide_form {
-            row![loudness, peak].spacing(12).into()
-        } else {
-            column![loudness, rule::horizontal(1), peak]
-                .spacing(7)
-                .into()
-        };
+        let primary = column![loudness, rule::horizontal(1), peak].spacing(7);
         let mut settings = column![
             text("Level & limiter")
                 .size(15)
@@ -1141,80 +992,6 @@ impl App {
             .push(self.numeric("Workers (0: auto, max: 32)", Field::Workers))
             .into()
     }
-
-    fn app_settings_view(&self) -> Element<'_, Message> {
-        column![
-            text("Engine & resources").size(14).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            text("Blank: bundled with this app. Non-empty: use the specified path.").size(12).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            button("Clear paths / use bundled tools").on_press(Message::UseBundledTools).style(theme::normal),
-            self.path_setting(
-                "phase_limiter executable",
-                &self.library.app_settings.backend,
-                Field::Backend
-            ),
-            self.path_setting(
-                "FFmpeg executable / PATH name",
-                &self.library.app_settings.ffmpeg,
-                Field::Ffmpeg
-            ),
-            self.path_setting("sound_quality2_cache", &self.library.app_settings.cache, Field::Cache),
-            text("Professionality uses audio_detector beside phase_limiter and resource/detection_preparation.json with its analysis_data corpus.")
-                .size(12).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            rule::horizontal(1),
-            self.path_setting("Default export directory", &self.library.app_settings.export_dir, Field::ExportDir),
-            rule::horizontal(1),
-            text(format!(
-                "Library: {:.1} MiB",
-                self.storage_bytes as f64 / 1048576.
-            ))
-            .size(14).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            compact_text(
-                self.library_folder().map(|p| p.display().to_string()).unwrap_or_default(),
-                self.library_folder().map(|p| p.display().to_string()).unwrap_or_default(), 12., true),
-            button("Open library folder").on_press(Message::OpenLibrary),
-        ]
-        .spacing(8)
-        .into()
-    }
-
-    fn queue_view(&self) -> Element<'_, Message> {
-        let waiting = self
-            .library
-            .jobs
-            .iter()
-            .filter(|j| j.status == Status::Waiting)
-            .count();
-        let mut footer = row![].spacing(8).align_y(iced::Center);
-        if let Some(active) = &self.active
-            && let Some(job) = self.library.jobs.iter().find(|j| j.id == active.id)
-        {
-            footer = footer
-                .push(compact_text(
-                    format!("Processing {}", self.library.job_label(job)),
-                    job.memo.clone(),
-                    12.,
-                    false,
-                ))
-                .push(container(progress_bar(0.0..=1.0, job.progress).girth(5)).width(100));
-        }
-        footer = footer.push(
-            text(format!("{waiting} queued"))
-                .size(12)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-        );
-        if waiting > 0 && !self.running {
-            footer = footer.push(button("Resume queue").on_press(Message::Start).padding(4));
-        }
-        if self.active.is_some() {
-            footer = footer.push(
-                button("Cancel current & pause")
-                    .on_press(Message::Cancel)
-                    .padding(4)
-                    .style(theme::normal),
-            );
-        }
-        footer.into()
-    }
 }
 
 fn numeric_cell<'a>(value: String, width: f32) -> Element<'a, Message> {
@@ -1246,31 +1023,6 @@ fn config_summary(c: &model::Config) -> String {
             "mastering off".into()
         }
     )
-}
-
-impl App {
-    fn path_setting<'a>(
-        &'a self,
-        label: &'static str,
-        value: &'a str,
-        setting: Field,
-    ) -> Element<'a, Message> {
-        self.explained(
-            label,
-            Topic::Field(setting),
-            row![
-                text_input(label, value)
-                    .on_input(move |value| Message::Edit(setting, value))
-                    .padding(5),
-                button("Browse…")
-                    .on_press(Message::BrowseSettingPath(setting))
-                    .style(theme::normal),
-            ]
-            .spacing(8)
-            .align_y(iced::Bottom)
-            .into(),
-        )
-    }
 }
 
 fn source_tooltip(track: &library::Track) -> String {

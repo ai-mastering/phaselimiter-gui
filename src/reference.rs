@@ -190,24 +190,16 @@ impl App {
         if !enabled {
             return controls.into();
         }
-        if self.draft_reference.due.is_some() || self.draft_reference.active {
-            controls = controls.push(text("Analyzing reference…").size(12));
-        } else if let Some(Err(error)) = &self.draft_reference.report {
+        if !self.draft_reference.active
+            && self.draft_reference.due.is_none()
+            && matches!(self.draft_reference.report, Some(Err(_)))
+            && self.draft_reference.source_stamp.is_some()
+        {
             controls = controls.push(
-                text(error)
-                    .size(12)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                    .color(theme::ERROR),
+                button("Retry")
+                    .on_press(Message::ReferenceSubmit)
+                    .style(theme::normal),
             );
-            if self.draft_reference.source_stamp.is_some() {
-                controls = controls.push(
-                    button("Retry")
-                        .on_press(Message::ReferenceSubmit)
-                        .style(theme::normal),
-                );
-            }
-        } else if self.ready_reference().is_ok() {
-            controls = controls.push(text("Reference ready").size(12));
         }
         controls.into()
     }

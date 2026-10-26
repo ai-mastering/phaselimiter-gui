@@ -127,7 +127,7 @@ impl App {
         )
     }
 
-    fn description(&self, topic: Topic) -> String {
+    pub(super) fn description(&self, topic: Topic) -> String {
         let s = &self.library.draft;
         let body = match topic {
             Topic::Field(field) => match field {

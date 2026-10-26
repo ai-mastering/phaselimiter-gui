@@ -416,7 +416,7 @@ pub fn first_invalid(app: &App) -> Option<Field> {
 }
 
 // Query standard widget geometry so validation can reveal the actual field,
-// including in the one-column responsive form. No guessed row offsets.
+// without guessed row offsets.
 pub fn reveal(field: Field) -> iced::Task<Message> {
     use iced::advanced::widget::{Id, Operation, operation::Outcome};
     struct Locate {
@@ -467,8 +467,6 @@ impl App {
         {
             self.numeric_errors.insert(field, spec.hint());
         }
-        self.show_settings = true;
-        self.show_app_settings = false;
         match field {
             Field::Oversample | Field::MaxIter1 | Field::MaxIter2 => {
                 self.show_limiter_details = true
@@ -479,7 +477,7 @@ impl App {
         reveal(field)
     }
     pub(super) fn reference_control(&self) -> Element<'_, Message> {
-        let mut content = column![self.reference_controls()].spacing(3);
+        let content = column![self.reference_controls()].spacing(3);
         let error = self
             .numeric_errors
             .get(&Field::Reference)
@@ -488,14 +486,6 @@ impl App {
             && (error.is_some()
                 || self.library.draft.use_reference
                     && matches!(self.draft_reference.report, Some(Err(_))));
-        if let Some(error) = error {
-            content = content.push(
-                text(error)
-                    .size(11)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                    .color(theme::ERROR),
-            );
-        }
         group(content.into(), Field::Reference, invalid)
     }
 }

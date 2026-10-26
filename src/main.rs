@@ -12,13 +12,18 @@ mod diagnostics;
 mod labels;
 mod library;
 mod measurements;
+mod menu;
 mod model;
 mod playback;
 mod plots;
+mod preferences;
 mod preparation;
 mod reference;
+mod report;
+mod status;
 mod theme;
 mod ui;
+mod windowing;
 
 use comparison::{ComparisonChoice, settings_differences};
 use iced::widget::{
@@ -46,12 +51,10 @@ fn main() -> iced::Result {
         playback::log(&format!("Rust panic: {panic}"));
         previous_hook(panic);
     }));
-    iced::application(App::load, App::update, App::view)
-        .title("Phaselimiter")
+    iced::daemon(App::boot, App::update, App::window_view)
+        .title(App::window_title)
         .subscription(App::subscription)
-        .theme(|_: &App| Theme)
-        .window_size((1280.0, 800.0))
-        .exit_on_close_request(false)
+        .theme(|_: &App, _| Theme)
         .run()
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,6 +81,12 @@ enum Field {
 }
 #[derive(Debug, Clone)]
 enum Message {
+    Menu(menu::Event),
+    Preferences(preferences::Event),
+    WindowOpened(iced::window::Id),
+    WindowInput(iced::window::Id, iced::Event, iced::event::Status),
+    ToggleChanges,
+    Report(report::Event),
     NoiseMode(NoiseMode),
     CeilingMode(CeilingMode),
     ReferenceMode(ReferenceMode),
@@ -106,15 +115,10 @@ enum Message {
     ReferencePicked(u64, Option<PathBuf>),
     DraftReferenceAnalyzed(u64, Result<reference::Prepared, String>),
     ReferenceFocused(bool),
-    Compose,
-    ShowAnalysis,
-    ShowMastering,
     ToggleLimiterDetails,
     ToggleOptimization,
     ToggleHelp(descriptions::Topic),
-    ToggleAppSettings,
-    BrowseSettingPath(Field),
-    SettingPathPicked(Field, Option<PathBuf>),
+    OpenAppSettings,
     Compare(ComparisonChoice),
     ReferenceLoaded(PathBuf, Result<analysis::Analysis, String>),
     EditMemo(Uuid, String),
@@ -142,8 +146,6 @@ enum Message {
     CopyCommand(Uuid),
     CopyLog(Uuid),
     CopyText(String),
-    SelectDiagnostic(String, iced::widget::text_editor::Action),
-    UseBundledTools,
     StorageSize(u64),
     OpenLibrary,
     FolderOpened(Result<(), String>),
@@ -171,8 +173,8 @@ struct App {
     hovering: bool,
     error: Option<String>,
     notice: Option<String>,
-    show_settings: bool,
-    show_app_settings: bool,
+    main_window: iced::window::Id,
+    preferences: Option<preferences::Dialog>,
     comparison_job: Option<Uuid>,
     reference_report: Option<(PathBuf, Result<analysis::Analysis, String>)>,
     reference_pending: Option<PathBuf>,
@@ -200,7 +202,9 @@ struct App {
     duration: f64,
     storage_bytes: u64,
     memo_save_at: Option<std::time::Instant>,
-    diagnostics: Vec<diagnostics::Diagnostic>,
+    menu: menu::State,
+    show_changes: bool,
+    report: Option<report::Report>,
     numeric_edits: HashMap<Field, String>,
     numeric_errors: HashMap<Field, String>,
 }
@@ -221,8 +225,8 @@ impl Default for App {
             hovering: false,
             error: None,
             notice: None,
-            show_settings: false,
-            show_app_settings: false,
+            main_window: iced::window::Id::unique(),
+            preferences: None,
             comparison_job: None,
             reference_report: None,
             reference_pending: None,
@@ -249,7 +253,9 @@ impl Default for App {
             duration: 0.,
             storage_bytes: 0,
             memo_save_at: None,
-            diagnostics: Vec::new(),
+            menu: menu::State::default(),
+            show_changes: false,
+            report: None,
             numeric_edits: HashMap::new(),
             numeric_errors: HashMap::new(),
         }
@@ -300,7 +306,6 @@ impl App {
         let analysis = app.start_analysis();
         let storage = app.refresh_storage();
         let reference = app.load_reference();
-        app.refresh_diagnostics();
         (app, Task::batch([task, analysis, storage, reference]))
     }
     fn library_folder(&self) -> Result<PathBuf, String> {
@@ -312,18 +317,21 @@ impl App {
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
-            iced::event::listen_with(|event, _, _| match event {
-                iced::Event::Window(iced::window::Event::FileDropped(path)) => {
-                    Some(Message::FileDropped(path))
-                }
-                iced::Event::Window(iced::window::Event::FileHovered(_)) => {
-                    Some(Message::Hover(true))
-                }
-                iced::Event::Window(iced::window::Event::FilesHoveredLeft) => {
-                    Some(Message::Hover(false))
-                }
-                iced::Event::Window(iced::window::Event::CloseRequested) => Some(Message::Close),
-                _ => None,
+            iced::event::listen_with(|event, status, id| {
+                matches!(
+                    &event,
+                    iced::Event::Keyboard(_)
+                        | iced::Event::Window(
+                            iced::window::Event::Focused
+                                | iced::window::Event::Unfocused
+                                | iced::window::Event::CloseRequested
+                                | iced::window::Event::Closed
+                                | iced::window::Event::FileDropped(_)
+                                | iced::window::Event::FileHovered(_)
+                                | iced::window::Event::FilesHoveredLeft
+                        )
+                )
+                .then_some(Message::WindowInput(id, event, status))
             }),
             iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::Tick),
         ])
@@ -550,7 +558,21 @@ impl App {
         let mut tasks = Vec::new();
         let mut save = false;
         match message {
+            Message::Menu(event) => return self.update_menu(event),
+            Message::Report(event) => return self.update_report(event),
+            Message::Preferences(event) => return self.update_preferences(event),
+            Message::WindowOpened(id) => return self.window_opened(id),
+            Message::WindowInput(id, event, status) => return self.window_input(id, event, status),
+            Message::ToggleChanges => {
+                self.show_changes = !self.show_changes;
+                if self.show_changes {
+                    tasks.push(iced::widget::operation::snap_to_end("mastering-fields"));
+                }
+            }
             Message::Edit(field, value) => {
+                if preferences::is_field(field) {
+                    return self.update_preferences(preferences::Event::Edit(field, value));
+                }
                 if !controls::enabled(field, &self.library.draft) {
                     return Task::none();
                 }
@@ -789,59 +811,7 @@ impl App {
                     self.draft_reference.report = Some(result);
                 }
             }
-            Message::Compose => {
-                self.show_settings = true;
-                self.show_app_settings = false;
-            }
-            Message::ShowAnalysis => {
-                self.show_settings = false;
-                self.show_app_settings = false;
-            }
-            Message::ShowMastering => {
-                self.show_settings = true;
-                self.show_app_settings = false;
-            }
-            Message::BrowseSettingPath(field) => {
-                let title = match field {
-                    Field::Backend => "Choose phase_limiter executable",
-                    Field::Ffmpeg => "Choose FFmpeg executable",
-                    Field::Cache => "Choose sound_quality2_cache",
-                    Field::ExportDir => "Choose default export directory",
-                    _ => return Task::none(),
-                };
-                let current = PathBuf::from(self.field_value(field));
-                tasks.push(Task::perform(
-                    async move {
-                        let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
-                        if current.is_dir() {
-                            dialog = dialog.set_directory(&current);
-                        } else if let Some(parent) = current.parent().filter(|p| p.is_dir()) {
-                            dialog = dialog.set_directory(parent);
-                        }
-                        let picked = if field == Field::ExportDir {
-                            dialog.pick_folder().await
-                        } else {
-                            dialog.pick_file().await
-                        };
-                        picked.map(|file| file.path().to_path_buf())
-                    },
-                    move |path| Message::SettingPathPicked(field, path),
-                ));
-            }
-            Message::SettingPathPicked(field, path) => {
-                if matches!(
-                    field,
-                    Field::Backend | Field::Ffmpeg | Field::Cache | Field::ExportDir
-                ) && let Some(path) = path
-                {
-                    *self.field_mut(field) = path.to_string_lossy().into_owned();
-                    save = true;
-                }
-            }
-            Message::ToggleAppSettings => {
-                self.show_app_settings = !self.show_app_settings;
-                tasks.push(self.refresh_storage());
-            }
+            Message::OpenAppSettings => return self.open_preferences(),
             Message::Compare(choice) => {
                 self.comparison_job = choice.job;
                 if !self.output_side {
@@ -1007,19 +977,6 @@ impl App {
                 }
             }
             Message::CopyText(value) => tasks.push(iced::clipboard::write(value)),
-            Message::UseBundledTools => {
-                self.library.app_settings.backend.clear();
-                self.library.app_settings.ffmpeg.clear();
-                self.library.app_settings.cache.clear();
-                save = true;
-            }
-            Message::SelectDiagnostic(key, action) => {
-                if !action.is_edit()
-                    && let Some(diagnostic) = self.diagnostics.iter_mut().find(|d| d.text == key)
-                {
-                    diagnostic.content.perform(action);
-                }
-            }
             Message::Backend(id, update) => {
                 if !self.active.as_ref().is_some_and(|a| a.id == id) {
                     return Task::none();
@@ -1222,8 +1179,12 @@ impl App {
                 Err(error) => self.error = Some(error),
             },
             Message::FolderOpened(result) => {
-                if let Err(e) = result {
-                    self.error = Some(e);
+                if let Err(error) = result {
+                    if let Some(dialog) = self.preferences.as_mut() {
+                        dialog.error = Some(error);
+                    } else {
+                        self.error = Some(error);
+                    }
                 }
             }
             Message::Export => {
@@ -1279,7 +1240,6 @@ impl App {
         tasks.push(self.start_next());
         tasks.push(self.start_draft_reference());
         tasks.push(self.start_analysis());
-        self.refresh_diagnostics();
         Task::batch(tasks)
     }
     fn default_export(&self, job: &Job) -> String {
@@ -1500,7 +1460,6 @@ mod tests {
         let _ = app.update(Message::Master);
         assert!(app.show_limiter_details);
         assert!(!app.show_optimization);
-        assert!(app.show_settings);
         assert!(app.library.jobs.is_empty());
         let _ = app.update(Message::Edit(Field::MaxIter1, "100".into()));
         let _ = app.update(Message::ToggleLimiterDetails);
@@ -1514,13 +1473,12 @@ mod tests {
     fn invalid_and_unfinished_settings_disable_run_and_explain_how_to_recover() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
-        app.show_settings = true;
         for (field, value) in [(Field::MaxIter1, "bad"), (Field::SampleRate, "123")] {
             *app.field_mut(field) = value.into();
             let (_, reason) = app.settings_issue().unwrap();
             let mut ui = iced_test::Simulator::with_size(
                 Default::default(),
-                iced::Size::new(850., 650.),
+                iced::Size::new(1000., 650.),
                 app.view(),
             );
             assert!(
@@ -1566,10 +1524,9 @@ mod tests {
     }
 
     #[test]
-    fn reference_blockers_are_visible_by_run_without_an_extra_navigation_button() {
+    fn reference_blockers_in_status_disable_run() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
-        app.show_settings = true;
         app.library.draft.use_reference = true;
         for error in [None, Some("The reference file could not be read.")] {
             app.draft_reference.report = error.map(|e| Err(e.into()));
@@ -1579,7 +1536,7 @@ mod tests {
             assert_eq!(field, Some(Field::Reference));
             let mut ui = iced_test::Simulator::with_size(
                 Default::default(),
-                iced::Size::new(850., 650.),
+                iced::Size::new(1000., 650.),
                 app.view(),
             );
             assert!(
@@ -1801,38 +1758,81 @@ mod tests {
         app.library
             .tracks
             .push(library::import(dir.path(), source, Uuid::from_u128(1)).unwrap());
-        let _ = app.update(Message::Compose);
         let _ = app.update(Message::Select((Uuid::from_u128(1), None)));
-        let _ = app.update(Message::ShowAnalysis);
-        let _ = app.update(Message::ShowMastering);
         assert_eq!(app.selected.map(|key| key.0), Some(Uuid::from_u128(1)));
         app.queue_master().unwrap();
         assert_eq!(app.library.jobs[0].track_id, Uuid::from_u128(1));
     }
     #[test]
-    fn setting_path_selection_is_saved_and_cancellation_preserves_value() {
+    fn preferences_do_not_interrupt_active_jobs_or_leak_drafts_into_history() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        let _ = app.start_next();
+        let id = app.active.as_ref().unwrap().id;
+        let tools = app.library.jobs[0].tools.backend.clone();
+        let _ = app.open_preferences();
+        let _ = app.update_preferences(preferences::Event::Edit(
+            Field::Backend,
+            "next engine".into(),
+        ));
+        let _ = app.update(Message::Backend(id, backend::Update::Progress(0.5)));
+        let _ = app.update(Message::Backend(
+            id,
+            backend::Update::Command("current command".into()),
+        ));
+        assert_eq!(app.library.jobs[0].progress, 0.5);
+        assert_eq!(app.active.as_ref().unwrap().id, id);
+        assert!(!app.active.as_ref().unwrap().cancel.load(Ordering::Relaxed));
+        assert!(
+            Library::load(dir.path())
+                .unwrap()
+                .app_settings
+                .backend
+                .is_empty()
+        );
+        let _ = app.update_preferences(preferences::Event::Accept);
+        assert_eq!(app.library.jobs[0].tools.backend, tools);
+        assert_eq!(app.active.as_ref().unwrap().id, id);
+        app.queue_master().unwrap();
+        assert_eq!(
+            app.library.jobs[1].tools.backend,
+            PathBuf::from("next engine")
+        );
+    }
+
+    #[test]
+    fn setting_path_selection_only_persists_after_preferences_accept() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        let _ = app.update(Message::OpenAppSettings);
+        let id = app.preferences.as_ref().unwrap().id;
         for field in [
             Field::Backend,
             Field::Ffmpeg,
             Field::Cache,
             Field::ExportDir,
         ] {
+            let original = app.field_value(field).to_owned();
             let path = dir.path().join("日本語 selected path");
-            let _ = app.update(Message::SettingPathPicked(field, Some(path.clone())));
-            assert_eq!(app.field_value(field), path.to_string_lossy());
-            let _ = app.update(Message::SettingPathPicked(field, None));
-            assert_eq!(app.field_value(field), path.to_string_lossy());
+            let _ =
+                app.update_preferences(preferences::Event::Picked(id, field, Some(path.clone())));
+            let _ = app.update_preferences(preferences::Event::Picked(id, field, None));
+            assert_eq!(app.field_value(field), original);
         }
+        let _ = app.update_preferences(preferences::Event::Accept);
         let saved = Library::load(dir.path()).unwrap();
-        assert_eq!(saved.app_settings.backend, app.library.app_settings.backend);
-        assert_eq!(saved.app_settings.ffmpeg, app.library.app_settings.ffmpeg);
-        assert_eq!(saved.app_settings.cache, app.library.app_settings.cache);
-        assert_eq!(
-            saved.app_settings.export_dir,
-            app.library.app_settings.export_dir
-        );
+        for value in [
+            &saved.app_settings.backend,
+            &saved.app_settings.ffmpeg,
+            &saved.app_settings.cache,
+            &saved.app_settings.export_dir,
+        ] {
+            assert_eq!(
+                *value,
+                dir.path().join("日本語 selected path").to_string_lossy()
+            );
+        }
     }
 
     #[test]
@@ -1860,7 +1860,10 @@ mod tests {
         assert_eq!(app.library.app_settings.ffmpeg, "explicit ffmpeg");
         assert_eq!(app.library.app_settings.cache, "explicit cache");
         let loudness = app.library.draft.loudness.clone();
-        let _ = app.update(Message::UseBundledTools);
+        let _ = app.update(Message::OpenAppSettings);
+        let _ = app.update_preferences(preferences::Event::UseBundledTools);
+        assert_eq!(app.library.app_settings.backend, "explicit engine");
+        let _ = app.update_preferences(preferences::Event::Accept);
         assert!(app.library.app_settings.backend.is_empty());
         assert!(app.library.app_settings.ffmpeg.is_empty());
         assert!(app.library.app_settings.cache.is_empty());
@@ -1912,10 +1915,12 @@ mod tests {
         app.running = false;
         assert_eq!(app.library.jobs.len(), 2);
         let new_destination = dir.path().join("another export directory");
+        let _ = app.update(Message::OpenAppSettings);
         let _ = app.update(Message::Edit(
             Field::ExportDir,
             new_destination.display().to_string(),
         ));
+        let _ = app.update_preferences(preferences::Event::Accept);
         assert!(
             std::path::Path::new(&app.default_export(&app.library.jobs[0]))
                 .starts_with(&new_destination)
@@ -1943,7 +1948,6 @@ mod tests {
             Uuid::from_u128(0),
             Some(app.library.jobs[0].id),
         )));
-        let _ = app.update(Message::Compose);
         app.library.draft.loudness = "-12".into();
         app.library.draft.ceiling = "-1".into();
         app.library.draft.intensity = "0.2".into();
@@ -1952,10 +1956,15 @@ mod tests {
         app.library.draft.seed = "42".into();
         let mut ui = iced_test::Simulator::with_size(
             Default::default(),
-            iced::Size::new(850., 650.),
+            iced::Size::new(1000., 650.),
             app.view(),
         );
-        let changes = ui.find("Changes").unwrap();
+        let changes = ui
+            .find(format!(
+                "▸ Changes · {}",
+                settings_differences(&app.library.jobs[0].config, &app.library.draft).len()
+            ))
+            .unwrap();
         assert!(changes.visible_bounds().is_some());
         let run = ui.find("Run mastering").unwrap();
         assert!(run.visible_bounds().is_some());
@@ -2078,16 +2087,13 @@ mod tests {
     }
 
     #[test]
-    fn queueing_keeps_the_settings_workspace_open_for_the_next_iteration() {
+    fn queueing_keeps_the_input_selected_for_the_next_iteration() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
-        let _ = app.update(Message::Compose);
         app.queue_master().unwrap();
-        assert!(app.show_settings);
         assert_eq!(app.selected.map(|key| key.0), Some(Uuid::nil()));
         app.library.draft.loudness = "-11".into();
         app.queue_master().unwrap();
-        assert!(app.show_settings);
         assert_eq!(app.library.jobs[1].config.loudness, -11.);
         assert_eq!(app.selected, Some((Uuid::from_u128(0), None)));
     }
@@ -2123,7 +2129,7 @@ mod tests {
         app.library.tracks[0].name = format!("{}_realfinal.wav", "mymusic_piano_eq_".repeat(15));
         app.library.tracks[0].source = dir.path().join(&app.library.tracks[0].name);
         let expected = app.library.tracks[0].source.display().to_string();
-        for width in [850., 1280.] {
+        for width in [1000., 1280.] {
             let mut ui = iced_test::Simulator::with_size(
                 Default::default(),
                 iced::Size::new(width, 800.),
@@ -2139,19 +2145,158 @@ mod tests {
     }
 
     #[test]
-    fn narrow_settings_keep_transport_and_run_action_visible() {
+    fn completed_result_settings_remain_editable_and_run_has_full_hit_area() {
+        use iced::widget::Id;
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
-        let _ = app.update(Message::Compose);
-        let mut ui = iced_test::Simulator::with_size(
-            Default::default(),
-            iced::Size::new(850., 650.),
-            app.view(),
-        );
-        ui.find("Play").unwrap();
-        ui.find("Mastering settings").unwrap();
-        ui.click("Run mastering").unwrap();
-        assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
+        app.queue_master().unwrap();
+        app.library.jobs[0].status = Status::Succeeded;
+        app.selected = Some((app.library.tracks[0].id, Some(app.library.jobs[0].id)));
+        for count in [0, 5, 8] {
+            app.library.draft = settings_from_config(&app.library.jobs[0].config);
+            let values = [
+                (Field::Loudness, "-10"),
+                (Field::Ceiling, "-1"),
+                (Field::LowCut, "30"),
+                (Field::HighCut, "18000"),
+                (Field::MaxIter1, "101"),
+                (Field::MaxIter2, "401"),
+                (Field::Seed, "123"),
+                (Field::Workers, "2"),
+            ];
+            for (field, value) in values.into_iter().take(count) {
+                *app.field_mut(field) = value.into();
+            }
+            assert_eq!(
+                settings_differences(&app.library.jobs[0].config, &app.library.draft).len(),
+                count
+            );
+            for expanded in [false, true] {
+                app.show_changes = expanded;
+                for (width, height) in [(1000., 480.), (1100., 550.), (1200., 650.), (1280., 800.)]
+                {
+                    let mut ui = iced_test::Simulator::with_size(
+                        Default::default(),
+                        iced::Size::new(width, height),
+                        app.view(),
+                    );
+                    let fields = ui
+                        .find(Id::new("mastering-fields"))
+                        .unwrap()
+                        .visible_bounds()
+                        .unwrap();
+                    assert!(fields.height >= 120., "{width}x{height}: {fields:?}");
+                    if let Ok(directory) = std::env::var("LAYOUT_REVIEW_DIR") {
+                        ui.snapshot(&theme::Theme)
+                            .unwrap()
+                            .matches_image(format!(
+                                "{directory}/initial-{width}-{height}-{count}-{expanded}.png"
+                            ))
+                            .unwrap();
+                    }
+                    ui.point_at(fields.center());
+                    for _ in 0..10 {
+                        if ui
+                            .find(Id::new("number-Loudness"))
+                            .unwrap()
+                            .visible_bounds()
+                            .is_some_and(|bounds| bounds.height >= 30.)
+                        {
+                            break;
+                        }
+                        ui.simulate([iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+                            delta: iced::mouse::ScrollDelta::Lines { x: 0., y: -1. },
+                        })]);
+                    }
+                    ui.click(Id::new("number-Loudness")).unwrap();
+                    ui.typewrite("0");
+                    let run = ui.find("Run mastering").unwrap().visible_bounds().unwrap();
+                    assert!(run.height >= 20.);
+                    // Probe near both edges of the 40px button, beyond its text.
+                    for y in [run.center().y - 18., run.center().y, run.center().y + 18.] {
+                        ui.point_at(iced::Point::new(run.center().x, y));
+                        ui.simulate(iced_test::simulator::click());
+                    }
+                    // Reach settings below the first viewport with the wheel.
+                    ui.point_at(fields.center());
+                    let mut reached_execution = false;
+                    for _ in 0..40 {
+                        ui.simulate([iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+                            delta: iced::mouse::ScrollDelta::Lines { x: 0., y: -2. },
+                        })]);
+                        if ui.find("Execution").unwrap().visible_bounds().is_some() {
+                            reached_execution = true;
+                            break;
+                        }
+                    }
+                    assert!(
+                        reached_execution,
+                        "Cannot scroll to Execution at {width}x{height}"
+                    );
+                    if let Ok(directory) = std::env::var("LAYOUT_REVIEW_DIR") {
+                        ui.snapshot(&theme::Theme)
+                            .unwrap()
+                            .matches_image(format!(
+                                "{directory}/settings-{width}-{height}-{count}-{expanded}.png"
+                            ))
+                            .unwrap();
+                    }
+                    let messages: Vec<_> = ui.into_messages().collect();
+                    assert!(
+                        messages
+                            .iter()
+                            .any(|m| matches!(m, Message::Edit(Field::Loudness, _)))
+                    );
+                    assert_eq!(
+                        messages
+                            .iter()
+                            .filter(|m| matches!(m, Message::Master))
+                            .count(),
+                        3
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resizing_keeps_the_same_panes_transport_and_run_action_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_with_track(dir.path());
+        for (width, height) in [(1000., 480.), (1100., 650.), (1280., 800.), (1600., 900.)] {
+            let mut ui = iced_test::Simulator::with_size(
+                Default::default(),
+                iced::Size::new(width, height),
+                app.view(),
+            );
+            let history = ui
+                .find("Audio & history")
+                .unwrap()
+                .visible_bounds()
+                .unwrap();
+            let play = ui.find("Play").unwrap().visible_bounds().unwrap();
+            let settings = ui
+                .find("Mastering settings")
+                .unwrap()
+                .visible_bounds()
+                .unwrap();
+            assert!(history.x < play.x && play.x < settings.x);
+            assert!(
+                ui.find("Click: seek · Drag: loop")
+                    .unwrap()
+                    .visible_bounds()
+                    .is_some()
+            );
+            assert!(
+                ui.find("Drop audio anywhere in window")
+                    .unwrap()
+                    .bounds()
+                    .height
+                    <= 18.
+            );
+            ui.click("Run mastering").unwrap();
+            assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
+        }
     }
 
     #[test]
@@ -2168,7 +2313,7 @@ mod tests {
         })));
         for kind in plots::Kind::ALL {
             app.graph = kind;
-            for width in [850., 1280.] {
+            for width in [1000., 1280.] {
                 let mut ui = iced_test::Simulator::with_size(
                     Default::default(),
                     iced::Size::new(width, 900.),
@@ -2185,7 +2330,7 @@ mod tests {
     }
 
     #[test]
-    fn wide_workspace_exposes_analysis_and_new_settings_together() {
+    fn workspace_exposes_analysis_and_new_settings_together() {
         let dir = tempfile::tempdir().unwrap();
         let app = app_with_track(dir.path());
         let mut ui = iced_test::Simulator::with_size(
@@ -2362,7 +2507,6 @@ mod tests {
             app.selected,
             Some((Uuid::from_u128(0), Some(app.library.jobs[0].id)))
         );
-        assert!(!app.show_settings);
     }
     #[test]
     fn finished_background_work_does_not_change_selection() {

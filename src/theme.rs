@@ -165,13 +165,6 @@ fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
     }
 }
 
-pub fn diagnostic(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
-    text_editor::Style {
-        value: ERROR,
-        ..editor(theme, status)
-    }
-}
-
 fn check(_: &Theme, status: checkbox::Status) -> checkbox::Style {
     let (checked, hovered, disabled) = match status {
         checkbox::Status::Active { is_checked } => (is_checked, false, false),
@@ -389,9 +382,6 @@ mod tests {
         assert!(focused.border.width > active.border.width);
         assert_ne!(disabled.background, active.background);
         assert_ne!(Background::Color(focused.selection), focused.background);
-        let error = diagnostic(&Theme, text_editor::Status::Focused { is_hovered: false });
-        assert_eq!(error.border, focused.border);
-        assert_eq!(error.value, ERROR);
     }
 
     #[test]
