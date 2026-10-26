@@ -104,11 +104,7 @@ impl App {
             .map_or("Ready", |s| s.lines().next().unwrap_or("Error"));
         let label = text(summary.to_owned())
             .size(theme::SMALL_TEXT)
-            .color(if is_error {
-                crate::theme::ERROR
-            } else {
-                crate::theme::LABEL
-            })
+            .style(if is_error { theme::error } else { theme::label })
             .wrapping(iced::widget::text::Wrapping::None);
         let content = container(
             row![

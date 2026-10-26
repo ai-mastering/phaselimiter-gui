@@ -151,6 +151,9 @@ pub struct Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
+    /// Theme name; empty and unknown names use the application's default.
+    #[serde(default)]
+    pub theme: String,
     pub backend: String,
     pub ffmpeg: String,
     pub cache: String,
@@ -171,6 +174,7 @@ fn default_export_directory() -> PathBuf {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            theme: String::new(),
             backend: String::new(),
             ffmpeg: String::new(),
             cache: String::new(),

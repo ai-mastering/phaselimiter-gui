@@ -1,11 +1,14 @@
 //! Transactional application preferences and their dialog lifecycle.
 use crate::{App, Element, Field, Message, descriptions::Topic, model::AppSettings, theme};
-use iced::widget::{button, column, container, row, rule, scrollable, space, text, text_input};
+use iced::widget::{
+    button, column, container, pick_list, row, rule, scrollable, space, text, text_input,
+};
 use iced::{Fill, Task, window};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    Theme(String),
     Edit(Field, String),
     Browse(Field),
     Picked(window::Id, Field, Option<PathBuf>),
@@ -44,6 +47,14 @@ impl Dialog {
 }
 
 impl App {
+    pub(super) fn current_theme(&self) -> theme::Theme {
+        let settings = self
+            .preferences
+            .as_ref()
+            .map_or(&self.library.app_settings, |dialog| &dialog.draft);
+        theme::Theme::from_name(&settings.theme)
+    }
+
     pub(super) fn open_preferences(&mut self) -> Task<Message> {
         if let Some(dialog) = &self.preferences {
             return window::gain_focus(dialog.id);
@@ -73,6 +84,7 @@ impl App {
             return Task::none();
         };
         match event {
+            Event::Theme(name) => dialog.draft.theme = name,
             Event::Edit(field, value) => {
                 if let Some(target) = dialog.field_mut(field) {
                     *target = value;
@@ -169,6 +181,18 @@ impl App {
             return space().into();
         };
         let mut content = column![
+            row![
+                text("Theme"),
+                pick_list(
+                    theme::Theme::choices(),
+                    Some(self.current_theme().name().to_owned()),
+                    |name| Message::Preferences(Event::Theme(name))
+                )
+                .width(Fill),
+            ]
+            .spacing(theme::SECTION_GAP)
+            .align_y(iced::Center),
+            rule::horizontal(1),
             text("Engine & resources").size(theme::HEADING_TEXT),
             text("Blank paths use the bundled tools. Otherwise, enter an absolute path.")
                 .size(theme::SMALL_TEXT),
@@ -217,7 +241,7 @@ impl App {
                 text(error)
                     .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                    .color(theme::ERROR),
+                    .style(theme::error),
             );
         }
         container(
@@ -303,6 +327,72 @@ mod tests {
         app.library.app_settings.backend = "saved engine".into();
         app.save();
         app
+    }
+
+    #[test]
+    #[ignore = "Render theme previews for manual review"]
+    fn theme_selector_visual_review() {
+        let directory = std::env::var("THEME_REVIEW_DIR").expect("set THEME_REVIEW_DIR");
+        let mut app = App::default();
+        let _ = app.open_preferences();
+        for name in ["Clear controls", "Light", "Dark"] {
+            let _ = app.update_preferences(Event::Theme(name.into()));
+            let mut ui = iced_test::Simulator::with_size(
+                Default::default(),
+                iced::Size::new(600., 570.),
+                app.preferences_view(),
+            );
+            assert!(
+                ui.snapshot(&app.current_theme())
+                    .unwrap()
+                    .matches_image(format!("{directory}/options-{name}.png"))
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn theme_preview_cancels_and_accept_persists_for_the_next_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(dir.path());
+        let saved = app.current_theme();
+        let _ = app.open_preferences();
+        let _ = app.update_preferences(Event::Theme("Dark".into()));
+        assert_eq!(app.current_theme(), theme::Theme::from(iced::Theme::Dark));
+        app.save();
+        assert!(
+            crate::Library::load(dir.path())
+                .unwrap()
+                .app_settings
+                .theme
+                .is_empty()
+        );
+        let _ = app.update_preferences(Event::Cancel);
+        assert_eq!(app.current_theme(), saved);
+        let _ = app.open_preferences();
+        let _ = app.update_preferences(Event::Theme("Dracula".into()));
+        let _ = app.update_preferences(Event::Accept);
+        assert!(app.preferences.is_none());
+        let reloaded = App {
+            library: crate::Library::load(dir.path()).unwrap(),
+            ..App::default()
+        };
+        assert_eq!(
+            reloaded.current_theme(),
+            theme::Theme::from(iced::Theme::Dracula)
+        );
+    }
+
+    #[test]
+    fn failed_theme_save_keeps_preview_local_and_cancel_restores_saved_theme() {
+        let mut app = App::default();
+        let _ = app.open_preferences();
+        let _ = app.update_preferences(Event::Theme("Dark".into()));
+        let _ = app.update_preferences(Event::Accept);
+        assert!(app.preferences.as_ref().unwrap().error.is_some());
+        assert!(app.library.app_settings.theme.is_empty());
+        let _ = app.update_preferences(Event::Cancel);
+        assert_eq!(app.current_theme(), theme::Theme::default());
     }
 
     #[test]

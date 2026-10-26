@@ -57,7 +57,7 @@ fn main() -> iced::Result {
     iced::daemon(App::boot, App::update, App::window_view)
         .title(App::window_title)
         .subscription(App::subscription)
-        .theme(|_: &App, _| Theme)
+        .theme(|app: &App, _| app.current_theme())
         .run()
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2566,7 +2566,7 @@ mod tests {
                         .unwrap();
                     assert!(fields.height >= 120., "{width}x{height}: {fields:?}");
                     if let Ok(directory) = std::env::var("LAYOUT_REVIEW_DIR") {
-                        ui.snapshot(&theme::Theme)
+                        ui.snapshot(&theme::Theme::default())
                             .unwrap()
                             .matches_image(format!(
                                 "{directory}/initial-{width}-{height}-{count}-{expanded}.png"
@@ -2617,7 +2617,7 @@ mod tests {
                         "Cannot scroll to Execution at {width}x{height}"
                     );
                     if let Ok(directory) = std::env::var("LAYOUT_REVIEW_DIR") {
-                        ui.snapshot(&theme::Theme)
+                        ui.snapshot(&theme::Theme::default())
                             .unwrap()
                             .matches_image(format!(
                                 "{directory}/settings-{width}-{height}-{count}-{expanded}.png"
@@ -2697,10 +2697,12 @@ mod tests {
                     app.view(),
                 );
                 assert!(
-                    ui.snapshot(&theme::Theme)
-                        .unwrap()
-                        .matches_image(format!("{directory}/workspace-{kind}-{width}.png"))
-                        .unwrap()
+                    ui.snapshot(&theme::Theme::from_name(
+                        &std::env::var("PHASELIMITER_TEST_THEME").unwrap_or_default()
+                    ))
+                    .unwrap()
+                    .matches_image(format!("{directory}/workspace-{kind}-{width}.png"))
+                    .unwrap()
                 );
             }
         }
@@ -2880,7 +2882,7 @@ mod tests {
             ui.find("Input audio").unwrap();
             ui.click(row_id(&app.library.jobs[0])).unwrap();
             if let Ok(path) = std::env::var("HISTORY_REVIEW_IMAGE") {
-                ui.snapshot(&theme::Theme)
+                ui.snapshot(&theme::Theme::default())
                     .unwrap()
                     .matches_image(path)
                     .unwrap();
