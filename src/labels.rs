@@ -22,54 +22,12 @@ impl Library {
             return "Date unknown".into();
         };
         let local = created.with_timezone(&Local);
-        // Compare wall-clock minutes so a repeated hour during DST also triggers
-        // disambiguation. Different offsets are appended below.
-        let minute = local.format("%Y/%m/%d %H:%M").to_string();
-        let same_minute: Vec<_> = self
-            .jobs
-            .iter()
-            .filter(|other| {
-                other.track_id == job.track_id
-                    && other.created_at.is_some_and(|t| {
-                        t.with_timezone(&Local).format("%Y/%m/%d %H:%M").to_string() == minute
-                    })
-            })
-            .collect();
-        let precision = if same_minute.len() < 2 {
-            ""
-        } else if same_minute.iter().any(|other| {
-            other.id != job.id
-                && other
-                    .created_at
-                    .is_some_and(|t| t.timestamp() == created.timestamp())
-        }) {
-            ":%S%.9f"
-        } else {
-            ":%S"
-        };
         let date = if local.year() == Local::now().year() {
-            "%m/%d %H:%M"
+            "%m/%d %H:%M:%S"
         } else {
-            "%Y/%m/%d %H:%M"
+            "%Y/%m/%d %H:%M:%S"
         };
-        let mut label = local.format(&format!("{date}{precision}")).to_string();
-        if same_minute.iter().any(|other| {
-            other.id != job.id
-                && other
-                    .created_at
-                    .is_some_and(|t| t.with_timezone(&Local).offset() != local.offset())
-        }) {
-            label.push_str(&local.format(" %:z").to_string());
-        }
-        if self.jobs.iter().any(|other| {
-            other.id != job.id
-                && other.track_id == job.track_id
-                && other.created_at == job.created_at
-        }) {
-            // Exact timestamp duplicates remain distinct without affecting identity.
-            label.push_str(&format!(" · {}", &job.id.to_string()[..8]));
-        }
-        label
+        local.format(date).to_string()
     }
 }
 
@@ -105,7 +63,7 @@ mod tests {
         let created = library.jobs[0].created_at.unwrap();
         let expected = created
             .with_timezone(&Local)
-            .format("%m/%d %H:%M")
+            .format("%m/%d %H:%M:%S")
             .to_string();
         assert_eq!(library.job_label(&library.jobs[0]), expected);
         library.jobs[0].memo = "  低域控えめ  比較用  ".into();
@@ -122,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn colliding_minutes_and_seconds_gain_precision_without_changing_identity() {
+    fn same_second_labels_can_match_without_changing_identity() {
         let mut library = library();
         let first_id = library.jobs[0].id;
         let mut second = library.jobs[0].clone();
@@ -135,17 +93,13 @@ mod tests {
         library.jobs[1].created_at = library.jobs[0]
             .created_at
             .map(|t| t + chrono::Duration::nanoseconds(1));
-        assert!(
-            library
-                .job_time_label(&library.jobs[0])
-                .ends_with(":10.000000000")
-        );
-        assert_ne!(
+        assert!(library.job_time_label(&library.jobs[0]).ends_with(":10"));
+        assert_eq!(
             library.job_time_label(&library.jobs[0]),
             library.job_time_label(&library.jobs[1])
         );
         library.jobs[1].created_at = library.jobs[0].created_at;
-        assert_ne!(
+        assert_eq!(
             library.job_time_label(&library.jobs[0]),
             library.job_time_label(&library.jobs[1])
         );
@@ -161,7 +115,7 @@ mod tests {
             library.job_time_label(&library.jobs[0]),
             created
                 .with_timezone(&Local)
-                .format("%Y/%m/%d %H:%M")
+                .format("%Y/%m/%d %H:%M:%S")
                 .to_string()
         );
         library.jobs[0].created_at = None;
