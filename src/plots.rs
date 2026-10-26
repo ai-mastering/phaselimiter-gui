@@ -10,6 +10,22 @@ use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 const CACHE_ENTRIES: usize = 100;
 
+fn axis_label(value: f32, step: f32) -> String {
+    let mut precision = if step > 0. {
+        (-step.log10()).ceil().clamp(0., 4.) as usize
+    } else {
+        0
+    };
+    while precision < 4 {
+        let scaled = step * 10f32.powi(precision as i32);
+        if (scaled - scaled.round()).abs() < 0.001 {
+            break;
+        }
+        precision += 1;
+    }
+    format!("{value:.precision$}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Spectrum,
@@ -195,30 +211,53 @@ impl Plot {
                 (xmin, xmax, ymin, ymax)
             }
         };
-        let margin = if self.waveform { 0. } else { 38. };
+        let ylabels: Vec<_> = (0..=4)
+            .map(|i| axis_label(ymax - (ymax - ymin) * i as f32 / 4., (ymax - ymin) / 4.))
+            .collect();
+        let margin = if self.waveform {
+            0.
+        } else {
+            (ylabels.iter().map(String::len).max().unwrap_or(0) as f32 * 7. + 12.).max(38.)
+        };
         let w = if self.waveform {
             bounds.width.max(1.)
         } else {
             (bounds.width - margin - 8.).max(1.)
         };
-        let h = (bounds.height - 24.).max(1.);
-        for i in 0..=4 {
-            let y = 8. + h * i as f32 / 4.;
+        let top = if self.waveform { 8. } else { 12. };
+        let h = (bounds.height - if self.waveform { 24. } else { 40. }).max(1.);
+        for (i, label) in ylabels.iter().enumerate() {
+            let y = top + h * i as f32 / 4.;
             frame.stroke(
                 &Path::line(Point::new(margin, y), Point::new(margin + w, y)),
                 Stroke::default().with_color(Color::from_rgb8(218, 224, 232)),
             );
             if !self.waveform {
                 frame.fill_text(canvas::Text {
-                    content: format!("{:.0}", ymax - (ymax - ymin) * i as f32 / 4.),
-                    position: Point::new(2., y),
+                    content: label.clone(),
+                    position: Point::new(margin - 8., y),
+                    align_x: iced::alignment::Horizontal::Right.into(),
+                    align_y: iced::alignment::Vertical::Center,
                     size: 10.into(),
                     ..Default::default()
                 });
                 let x = xmin + (xmax - xmin) * i as f32 / 4.;
                 frame.fill_text(canvas::Text {
-                    content: format!("{:.0}", if self.logarithmic { 10f32.powf(x) } else { x }),
-                    position: Point::new(margin + w * i as f32 / 4., h + 9.),
+                    content: axis_label(
+                        if self.logarithmic { 10f32.powf(x) } else { x },
+                        if self.logarithmic {
+                            1.
+                        } else {
+                            (xmax - xmin) / 4.
+                        },
+                    ),
+                    position: Point::new(margin + w * i as f32 / 4., h + 20.),
+                    align_x: match i {
+                        0 => iced::alignment::Horizontal::Left,
+                        4 => iced::alignment::Horizontal::Right,
+                        _ => iced::alignment::Horizontal::Center,
+                    }
+                    .into(),
                     size: 10.into(),
                     ..Default::default()
                 });
@@ -237,7 +276,7 @@ impl Plot {
                     }
                     let point = Point::new(
                         margin + w * (transform(x) - xmin) / (xmax - xmin).max(0.001),
-                        8. + h * (1. - (y - ymin) / (ymax - ymin).max(0.001)),
+                        top + h * (1. - (y - ymin) / (ymax - ymin).max(0.001)),
                     );
                     if first {
                         builder.move_to(point);
@@ -265,6 +304,14 @@ mod tests {
             position: 0.,
             region: None,
         }
+    }
+    #[test]
+    fn fractional_axis_ticks_remain_distinct() {
+        let labels: Vec<_> = (0..=4).map(|i| axis_label(i as f32 * 0.25, 0.25)).collect();
+        assert!(labels.windows(2).all(|pair| pair[0] != pair[1]));
+        assert_eq!(axis_label(24000., 1.), "24000");
+        assert_eq!(axis_label(-100., 20.), "-100");
+        assert_eq!(axis_label(0.025, 0.025), "0.025");
     }
     #[test]
     fn cursor_loop_and_revisiting_a_source_reuse_static_geometry() {
@@ -300,5 +347,58 @@ mod tests {
         assert_eq!(state.builds.get(), 4);
         draw(&a, bounds);
         assert_eq!(state.builds.get(), 4);
+    }
+    // Render with the application's real canvas renderer for manual visual review.
+    #[test]
+    #[ignore]
+    fn chart_visual_review() {
+        let directory = std::env::var("CHART_REVIEW_DIR").expect("set CHART_REVIEW_DIR");
+        for (name, logarithmic, waveform, points) in [
+            (
+                "spectrum",
+                true,
+                false,
+                vec![(20., -100.), (100., -45.), (1000., -20.), (24000., -60.)],
+            ),
+            (
+                "loudness",
+                false,
+                false,
+                vec![(0., -24.), (0.25, -10.), (0.5, -18.), (1., -12.)],
+            ),
+            (
+                "histogram",
+                false,
+                false,
+                vec![(-60., 0.), (-24., 120000.), (-12., 240000.), (0., 0.)],
+            ),
+            (
+                "waveform",
+                false,
+                true,
+                vec![(0., 0.), (0.25, 1.), (0.5, -1.), (1., 0.)],
+            ),
+        ] {
+            for width in [280., 560.] {
+                let chart = Plot {
+                    logarithmic,
+                    waveform,
+                    ..plot(Arc::from(points.clone()))
+                };
+                let mut ui = iced_test::Simulator::<Message, Theme, Renderer>::with_size(
+                    Default::default(),
+                    iced::Size::new(width, 220.),
+                    iced::widget::canvas(chart)
+                        .width(iced::Length::Fill)
+                        .height(iced::Length::Fill),
+                );
+                assert!(
+                    ui.snapshot(&Theme)
+                        .unwrap()
+                        .matches_image(format!("{directory}/{name}-{width}.png"))
+                        .unwrap()
+                );
+            }
+        }
     }
 }
