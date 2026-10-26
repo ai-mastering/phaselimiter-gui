@@ -333,6 +333,8 @@ pub struct Config {
     pub solver: Solver,
 }
 
+// UI policy for explicit worker counts; 0 retains backend auto detection.
+pub const MAX_WORKERS: u32 = 32;
 pub const OVERSAMPLING: [u32; 5] = [1, 2, 4, 8, 16];
 // Music-production rates (Logic Pro project/file formats). Encoders further limit them.
 pub fn sample_rates(format: Format) -> &'static [u32] {
@@ -423,8 +425,8 @@ impl Settings {
             bit_depth,
             workers: {
                 let v = integer(&self.workers, "Workers")?;
-                if v > i32::MAX as u32 {
-                    return Err("Workers: exceeds backend integer range.".into());
+                if v > MAX_WORKERS {
+                    return Err(format!("Workers: use 0 to {MAX_WORKERS} (0: auto)."));
                 }
                 v
             },
@@ -640,6 +642,10 @@ mod tests {
         assert!(s.parse().is_err());
         s.evaluations = "100".into();
         s.workers = (i32::MAX as u64 + 1).to_string();
+        assert!(s.parse().is_err());
+        s.workers = "32".into();
+        assert_eq!(s.parse().unwrap().workers, 32);
+        s.workers = "33".into();
         assert!(s.parse().is_err());
         s.workers = "0".into();
         s.oversample = "32".into();

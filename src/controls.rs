@@ -116,7 +116,7 @@ pub fn spec(field: Field, s: &Settings) -> Option<Number> {
             1.,
         ),
         Field::MaxIter1 | Field::MaxIter2 | Field::Evaluations => uint(1, i32::MAX as u64),
-        Field::Workers => uint(0, i32::MAX as u64),
+        Field::Workers => uint(0, model::MAX_WORKERS as u64),
         Field::Seed => uint(0, u64::MAX),
         _ => None,
     }

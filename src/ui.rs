@@ -948,7 +948,7 @@ impl App {
             )
             .push(rule::horizontal(1))
             .push(text("Execution").size(15))
-            .push(self.numeric("Workers (0: auto)", Field::Workers))
+            .push(self.numeric("Workers (0: auto, max: 32)", Field::Workers))
             .into()
     }
 

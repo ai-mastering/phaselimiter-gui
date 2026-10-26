@@ -1556,13 +1556,18 @@ mod tests {
         let _ = app.update(Message::Edit(Field::Loudness, "-".into()));
         let _ = app.update(Message::Edit(Field::Loudness, String::new()));
         assert_eq!(app.numeric_edits[&Field::Loudness], "-");
-        let _ = app.update(Message::Edit(Field::Workers, i32::MAX.to_string()));
-        assert_eq!(app.library.draft.workers, i32::MAX.to_string());
-        let _ = app.update(Message::Edit(
-            Field::Workers,
-            (i32::MAX as u64 + 1).to_string(),
-        ));
-        assert_eq!(app.library.draft.workers, i32::MAX.to_string());
+        let _ = app.update(Message::CommitNumber(Field::Loudness));
+        let _ = app.update(Message::Edit(Field::Workers, "32".into()));
+        assert_eq!(app.library.draft.workers, "32");
+        let _ = app.update(Message::Adjust(Field::Workers, true));
+        assert_eq!(app.library.draft.workers, "32");
+        let _ = app.update(Message::Edit(Field::Workers, "33".into()));
+        assert_eq!(app.library.draft.workers, "32");
+        app.library.draft.workers = "33".into(); // Invalid saved values are also blocked.
+        assert_eq!(app.settings_issue().unwrap().0, Some(Field::Workers));
+        assert!(app.queue_master().is_err());
+        let _ = app.update(Message::Edit(Field::Workers, "0".into()));
+        assert!(app.settings_issue().is_none());
     }
 
     #[test]
