@@ -109,10 +109,8 @@ enum Message {
     ToggleOptimization,
     ToggleExport,
     ToggleAppSettings,
-    ToggleHistory(bool),
     Compare(ComparisonChoice),
     ReferenceLoaded(PathBuf, Result<analysis::Analysis, String>),
-    UseSettings(Uuid),
     EditMemo(Uuid, String),
     SaveMemo,
     Master,
@@ -170,13 +168,11 @@ struct App {
     show_settings: bool,
     show_export: bool,
     show_app_settings: bool,
-    history_visibility: Option<bool>,
     comparison_job: Option<Uuid>,
     reference_report: Option<(PathBuf, Result<analysis::Analysis, String>)>,
     reference_pending: Option<PathBuf>,
     draft_reference: reference::State,
     force_analysis: HashSet<AudioKey>,
-    composer_track: Option<Uuid>,
 
     show_details: bool,
     show_limiter_details: bool,
@@ -222,13 +218,11 @@ impl Default for App {
             show_settings: false,
             show_export: false,
             show_app_settings: false,
-            history_visibility: None,
             comparison_job: None,
             reference_report: None,
             reference_pending: None,
             draft_reference: reference::State::default(),
             force_analysis: HashSet::new(),
-            composer_track: None,
             show_details: false,
             show_limiter_details: false,
             show_optimization: false,
@@ -470,8 +464,8 @@ impl App {
             return Err(reason);
         }
         let id = self
-            .composer_track
-            .or(self.selected.map(|key| key.0))
+            .selected
+            .map(|key| key.0)
             .ok_or("Select an input first.")?;
         let track = self
             .library
@@ -538,7 +532,6 @@ impl App {
             command: None,
         });
         self.running = true;
-        self.composer_track = Some(track.id);
         self.notice = Some("Mastering queued. Playback selection is unchanged.".into());
         Ok(())
     }
@@ -772,7 +765,6 @@ impl App {
                 }
             }
             Message::Compose => {
-                self.composer_track = self.selected.map(|key| key.0);
                 self.show_settings = true;
                 self.show_app_settings = false;
             }
@@ -789,7 +781,6 @@ impl App {
                 self.show_app_settings = !self.show_app_settings;
                 tasks.push(self.refresh_storage());
             }
-            Message::ToggleHistory(visible) => self.history_visibility = Some(visible),
             Message::Compare(choice) => {
                 self.comparison_job = choice.job;
                 if !self.output_side {
@@ -801,19 +792,6 @@ impl App {
                 if self.reference_pending.as_ref() == Some(&path) {
                     self.reference_pending = None;
                     self.reference_report = Some((path, result));
-                }
-            }
-            Message::UseSettings(id) => {
-                if let Some(job) = self.library.jobs.iter().find(|j| j.id == id) {
-                    self.composer_track = Some(job.track_id);
-                    self.library.draft = settings_from_config(&job.config);
-                    self.numeric_edits.clear();
-                    self.numeric_errors.clear();
-                    self.invalidate_draft_reference(true);
-
-                    self.show_settings = true;
-                    self.show_app_settings = false;
-                    save = true;
                 }
             }
             Message::ToggleLimiterDetails => {
@@ -863,6 +841,12 @@ impl App {
                     self.comparison_job = None;
                 }
                 self.selected = Some(key);
+                if let Some(job) = self.job() {
+                    self.library.draft = settings_from_config(&job.config);
+                    self.numeric_edits.clear();
+                    self.numeric_errors.clear();
+                    self.invalidate_draft_reference(true);
+                }
                 self.show_export = false;
                 self.output_side = key.1.is_some();
                 self.error = None;
@@ -885,21 +869,17 @@ impl App {
                     self.error =
                         Some("Cancel the active mastering before removing this audio.".into());
                 } else {
-                    if key.1.is_none() {
-                        if let Some(track) = self.library.tracks.iter().find(|t| t.id == key.0) {
-                            let reference = track
-                                .analysis
-                                .as_ref()
-                                .and_then(|a| a.path())
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_default();
-                            if self.library.draft.reference == reference {
-                                self.library.draft.reference.clear();
-                            }
-                        }
-                        if self.composer_track == Some(key.0) {
-                            self.composer_track = None;
-                            self.show_settings = false;
+                    if key.1.is_none()
+                        && let Some(track) = self.library.tracks.iter().find(|t| t.id == key.0)
+                    {
+                        let reference = track
+                            .analysis
+                            .as_ref()
+                            .and_then(|a| a.path())
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default();
+                        if self.library.draft.reference == reference {
+                            self.library.draft.reference.clear();
                         }
                     }
                     let removed_jobs: Vec<_> = self
@@ -1724,7 +1704,7 @@ mod tests {
         assert!(app.prepared.contains_key(&path));
     }
     #[test]
-    fn browsing_history_does_not_retarget_an_open_mastering_form() {
+    fn selecting_an_original_retargets_the_mastering_form() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
         let source = dir.path().join("another.wav");
@@ -1736,9 +1716,9 @@ mod tests {
         let _ = app.update(Message::Select((Uuid::from_u128(1), None)));
         let _ = app.update(Message::ShowAnalysis);
         let _ = app.update(Message::ShowMastering);
-        assert_eq!(app.composer_track, Some(Uuid::nil()));
+        assert_eq!(app.selected.map(|key| key.0), Some(Uuid::from_u128(1)));
         app.queue_master().unwrap();
-        assert_eq!(app.library.jobs[0].track_id, Uuid::nil());
+        assert_eq!(app.library.jobs[0].track_id, Uuid::from_u128(1));
     }
     #[test]
     fn history_recall_preserves_tool_overrides_and_clearing_them_does_not_change_history() {
@@ -1747,14 +1727,20 @@ mod tests {
         app.queue_master().unwrap();
         app.running = false;
         let recorded = app.library.jobs[0].tools.backend.clone();
-        let _ = app.update(Message::UseSettings(app.library.jobs[0].id));
+        let _ = app.update(Message::Select((
+            app.library.jobs[0].track_id,
+            Some(app.library.jobs[0].id),
+        )));
         assert!(app.library.app_settings.backend.is_empty());
         assert!(app.library.app_settings.ffmpeg.is_empty());
         assert!(app.library.app_settings.cache.is_empty());
         app.library.app_settings.backend = "explicit engine".into();
         app.library.app_settings.ffmpeg = "explicit ffmpeg".into();
         app.library.app_settings.cache = "explicit cache".into();
-        let _ = app.update(Message::UseSettings(app.library.jobs[0].id));
+        let _ = app.update(Message::Select((
+            app.library.jobs[0].track_id,
+            Some(app.library.jobs[0].id),
+        )));
         assert_eq!(app.library.app_settings.backend, "explicit engine");
         assert_eq!(app.library.app_settings.ffmpeg, "explicit ffmpeg");
         assert_eq!(app.library.app_settings.cache, "explicit cache");
@@ -1787,7 +1773,10 @@ mod tests {
             Some(app.library.jobs[0].id),
         )));
         assert!(std::path::Path::new(&app.export_path).starts_with(&destination));
-        let _ = app.update(Message::UseSettings(app.library.jobs[0].id));
+        let _ = app.update(Message::Select((
+            app.library.jobs[0].track_id,
+            Some(app.library.jobs[0].id),
+        )));
         assert_eq!(app.library.app_settings.export_directory(), destination);
         app.queue_master().unwrap();
         app.running = false;
@@ -1809,7 +1798,7 @@ mod tests {
     }
 
     #[test]
-    fn changes_and_explicit_recall_are_visible_immediately_above_run_on_small_screens() {
+    fn changes_are_visible_immediately_above_run_on_small_screens() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
         app.queue_master().unwrap();
@@ -1830,27 +1819,43 @@ mod tests {
             iced::Size::new(850., 650.),
             app.view(),
         );
-        let changes = ui
-            .find(format!(
-                "Changes from {}",
-                app.library.job_label(&app.library.jobs[0])
-            ))
-            .unwrap();
+        let changes = ui.find("Changes").unwrap();
         assert!(changes.visible_bounds().is_some());
         let run = ui.find("Run mastering").unwrap();
         assert!(run.visible_bounds().is_some());
         assert!(run.bounds().y > changes.bounds().y);
         assert!(run.bounds().y - changes.bounds().y < 220.);
         assert!(ui.find("Default export directory").is_err());
-        ui.click(format!(
-            "Load settings from {}",
-            app.library.job_label(&app.library.jobs[0])
-        ))
-        .unwrap();
         assert!(
-            ui.into_messages()
-                .any(|m| matches!(m, Message::UseSettings(id) if id == app.library.jobs[0].id))
+            ui.find(format!(
+                "Load settings from {}",
+                app.library.job_label(&app.library.jobs[0])
+            ))
+            .is_err()
         );
+    }
+
+    #[test]
+    fn selecting_history_recalls_settings_and_clears_unfinished_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.library.draft.loudness = "-12".into();
+        app.library.draft.intensity = "0.2".into();
+        app.queue_master().unwrap();
+        let job = app.library.jobs[0].clone();
+        let _ = app.update(Message::Edit(Field::Loudness, "-".into()));
+        let _ = app.update(Message::Select((job.track_id, Some(job.id))));
+        assert!(app.numeric_edits.is_empty());
+        assert!(app.numeric_errors.is_empty());
+        assert_eq!(
+            serde_json::to_value(app.library.draft.parse().unwrap()).unwrap(),
+            serde_json::to_value(&job.config).unwrap()
+        );
+        app.library.draft.loudness = "-9".into();
+        app.queue_master().unwrap();
+        assert_eq!(app.library.jobs[0].config.loudness, -12.);
+        assert_eq!(app.library.jobs[1].config.loudness, -9.);
+        assert_eq!(app.library.jobs[1].track_id, job.track_id);
     }
 
     #[test]
@@ -1867,12 +1872,11 @@ mod tests {
         assert_eq!(app.library.jobs[0].input, app.library.jobs[1].input);
         assert_ne!(app.library.jobs[0].output, app.library.jobs[1].output);
         assert_eq!(app.library.draft.loudness, "-11");
-        let before = app.library.draft.loudness.clone();
         let _ = app.update(Message::Select((
             Uuid::from_u128(0),
             Some(app.library.jobs[0].id),
         )));
-        assert_eq!(app.library.draft.loudness, before);
+        assert_eq!(app.library.draft.loudness, "-9");
         assert!(app.output_side);
         let _ = app.update(Message::Side(false));
         assert_eq!(
@@ -1906,6 +1910,7 @@ mod tests {
             Uuid::from_u128(0),
             Some(app.library.jobs[1].id),
         )));
+        app.library.draft.loudness = "-10".into();
         let _ = app.update(Message::Compare(
             app.comparison_choices()
                 .into_iter()
@@ -1943,7 +1948,7 @@ mod tests {
         let _ = app.update(Message::Compose);
         app.queue_master().unwrap();
         assert!(app.show_settings);
-        assert_eq!(app.composer_track, Some(Uuid::nil()));
+        assert_eq!(app.selected.map(|key| key.0), Some(Uuid::nil()));
         app.library.draft.loudness = "-11".into();
         app.queue_master().unwrap();
         assert!(app.show_settings);
@@ -1986,13 +1991,13 @@ mod tests {
             app.view(),
         );
         ui.find("Play").unwrap();
-        ui.find("Next mastering").unwrap();
+        ui.find("Mastering settings").unwrap();
         ui.click("Run mastering").unwrap();
         assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
     }
 
     #[test]
-    fn wide_workspace_exposes_analysis_and_next_settings_together() {
+    fn wide_workspace_exposes_analysis_and_new_settings_together() {
         let dir = tempfile::tempdir().unwrap();
         let app = app_with_track(dir.path());
         let mut ui = iced_test::Simulator::with_size(
@@ -2000,7 +2005,7 @@ mod tests {
             iced::Size::new(1280., 800.),
             app.view(),
         );
-        ui.find("Next mastering").unwrap();
+        ui.find("Mastering settings").unwrap();
         ui.find("Professionality").unwrap();
         ui.find("Professionality2").unwrap();
         ui.find("Dissonance").unwrap();
@@ -2118,7 +2123,7 @@ mod tests {
         )
         .unwrap();
         std::fs::remove_dir_all(app.library.tracks[0].input.parent().unwrap()).unwrap();
-        let _ = app.update(Message::UseSettings(job.id));
+        let _ = app.update(Message::Select((job.track_id, Some(job.id))));
         app.queue_master().unwrap();
         assert!(app.library.jobs[1].config.reference.is_some());
     }
@@ -2131,6 +2136,8 @@ mod tests {
         app.library.draft.loudness = "-12".into();
         app.queue_master().unwrap();
         app.running = false;
+        app.library.jobs[0].memo = "older".into();
+        app.library.jobs[1].memo = "newer".into();
         let messages = {
             let mut ui = iced_test::simulator(app.view());
             ui.find("日本語 mix.wav").unwrap();

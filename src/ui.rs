@@ -12,20 +12,9 @@ impl App {
 
     fn workspace_view(&self, width: f32) -> Element<'_, Message> {
         let wide = width >= WIDE_WIDTH;
-        let history_visible = self.history_visibility.unwrap_or(width >= 950.);
         let mut header = row![text("PHASELIMITER").size(15)]
             .spacing(8)
             .align_y(iced::Center);
-        header = header.push(
-            button(if history_visible {
-                "Hide history"
-            } else {
-                "History"
-            })
-            .on_press(Message::ToggleHistory(!history_visible))
-            .style(theme::normal)
-            .padding(5),
-        );
         header = header
             .push(
                 text_input("Drop audio or paste a file path", &self.input)
@@ -55,10 +44,9 @@ impl App {
         if let Some(notice) = &self.notice {
             body = body.push(text(notice).size(12));
         }
-        let mut workspace = row![].spacing(10).height(Fill);
-        if history_visible {
-            workspace = workspace.push(self.history_view()).push(rule::vertical(1));
-        }
+        let mut workspace = row![self.history_view(), rule::vertical(1)]
+            .spacing(10)
+            .height(Fill);
         let mut center = column![].spacing(8).width(Fill).height(Fill);
         if let Some(track) = self.track() {
             let mut title = row![
@@ -121,15 +109,7 @@ impl App {
             );
         }
         if !wide && (self.show_settings || self.show_app_settings) {
-            center = center.push(self.settings_panel(
-                width
-                    - if history_visible {
-                        HISTORY_WIDTH + 32.
-                    } else {
-                        20.
-                    }
-                    >= 560.,
-            ));
+            center = center.push(self.settings_panel(width - HISTORY_WIDTH - 32. >= 560.));
         } else {
             center = center.push(
                 scrollable(self.analysis_view())
@@ -178,30 +158,15 @@ impl App {
                 .collect();
             for job in jobs.into_iter().rev() {
                 let key = (track.id, Some(job.id));
-                let unit = match job.config.reference_mode {
-                    ReferenceMode::Loudness | ReferenceMode::YoutubeLoudness => "LUFS",
-                    _ => "dB",
-                };
                 let label = self.library.job_label(job);
+                let failed = matches!(job.status, Status::Failed | Status::Interrupted);
+                let label = if failed { format!("! {label}") } else { label };
                 entries = entries.push(
-                    button(
-                        column![
-                            text(label).size(12),
-                            text(format!("{} {} · {}", job.config.loudness, unit, job.status))
-                                .size(11),
-                            text(format!(
-                                "peak {}  ·  {}",
-                                job.config.ceiling,
-                                if job.config.mastering {
-                                    format!("intensity {}", job.config.intensity)
-                                } else {
-                                    "mastering off".into()
-                                }
-                            ))
-                            .size(11),
-                        ]
-                        .spacing(2),
-                    )
+                    button(text(label).size(12).color(if failed {
+                        theme::ERROR
+                    } else {
+                        theme::LABEL
+                    }))
                     .width(Fill)
                     .padding(5)
                     .style(if self.selected == Some(key) {
@@ -359,7 +324,7 @@ impl App {
         let mut detail = column![].spacing(7);
         if let Some(job) = job {
             detail = detail.push(
-                text_input("Memo (optional, saved automatically)", &job.memo)
+                text_input("Memo", &job.memo)
                     .on_input(move |memo| Message::EditMemo(job.id, memo))
                     .on_submit(Message::SaveMemo),
             );
@@ -371,7 +336,7 @@ impl App {
                             "Created: {}",
                             created
                                 .with_timezone(&chrono::Local)
-                                .format("%Y/%m/%d %H:%M:%S%.9f %:z")
+                                .format("%Y/%m/%d %H:%M:%S")
                         )
                     },
                 ))
@@ -386,16 +351,6 @@ impl App {
                 row![
                     text("Compare A").size(12),
                     pick_list(choices, selected, Message::Compare),
-                    button(
-                        text(format!(
-                            "Load settings from {}",
-                            self.library.job_label(job)
-                        ))
-                        .size(12)
-                    )
-                    .on_press(Message::UseSettings(job.id))
-                    .padding(3)
-                    .style(theme::normal),
                 ]
                 .spacing(8)
                 .align_y(iced::Center),
@@ -681,37 +636,17 @@ impl App {
     fn settings_panel(&self, wide_form: bool) -> Element<'_, Message> {
         if self.show_app_settings {
             return column![
-                row![
-                    text("Application settings").size(15),
-                    button("Close").on_press(Message::ToggleAppSettings)
-                ]
-                .spacing(8),
+                text("Application settings").size(15),
                 scrollable(self.app_settings_view()).spacing(4).height(Fill),
             ]
             .spacing(8)
             .height(Fill)
             .into();
         }
-        let target = self.composer_track.or(self.selected.map(|k| k.0));
+        let target = self.selected.map(|k| k.0);
         let track = self.library.tracks.iter().find(|t| Some(t.id) == target);
-        let mut heading = column![
-            text("Next mastering").size(15),
-            text(format!(
-                "Input: {}",
-                track.map(|t| t.name.as_str()).unwrap_or("Select an input")
-            ))
-            .size(12)
-        ]
-        .spacing(4);
-        if self.selected.map(|k| k.0) != target && self.selected.is_some() {
-            heading = heading.push(
-                button("Use selected input")
-                    .on_press(Message::Compose)
-                    .padding(4),
-            );
-        }
         let mut panel = column![
-            heading,
+            text("Mastering settings").size(15),
             scrollable(self.mastering_settings_view(wide_form))
                 .id("mastering-fields")
                 .spacing(4)
@@ -769,18 +704,8 @@ impl App {
         }
         column![
             rule::horizontal(1),
-            text(format!("Changes from {}", self.library.job_label(job))).size(13),
+            text("Changes").size(13),
             scrollable(changes).spacing(4).height(height),
-            button(
-                text(format!(
-                    "Load settings from {}",
-                    self.library.job_label(job)
-                ))
-                .size(12)
-            )
-            .on_press(Message::UseSettings(job.id))
-            .padding(4)
-            .style(theme::normal),
         ]
         .spacing(4)
         .into()
