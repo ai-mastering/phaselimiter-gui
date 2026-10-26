@@ -88,6 +88,56 @@ impl std::fmt::Display for Kind {
         })
     }
 }
+// Audited against bundled analyzer/limiter 387d66903c62c771c96039f9810484ac34fb0a01:
+// audio_analyzer/{single_mode,waveform,spectrum,spectrum_distribution}.h,
+// bakuage/src/loudness_ebu_r128.cpp, phase_limiter/main.cpp PhaseLimitInplace.
+// FFmpeg: libavfilter/avf_showspectrum.c showspectrumpic options/rendering.
+// GUI callers: analysis::run_with_options / plot_data, backend::arguments, ui.rs.
+// Visualization is enabled, spectrum_distribution_output is requested, and the
+// limiter image uses default gain/size. No extra analyzer images are displayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Help {
+    Waveform,
+    Chart(Kind),
+    LimitingError,
+}
+
+impl Help {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Waveform => "Waveform",
+            Self::Chart(Kind::Spectrum) => "Spectrum",
+            Self::Chart(Kind::Loudness) => "Loudness",
+            Self::Chart(Kind::Histogram) => "Histogram",
+            Self::Chart(Kind::Distribution) => "Distribution",
+            Self::LimitingError => "Limiting-error spectrogram",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Waveform => {
+                "Overview of the audio selected for listening. The analyzer divides the whole file into up to 512 intervals and records each interval’s minimum and maximum sample across both channels; the app connects these alternating values. Horizontal position represents progress through the file, and vertical position is amplitude on a fixed −1 to +1 scale. Click to seek or drag to select a playback region. This overview uses the analyzed samples, without the playback loudness-matching gain."
+            }
+            Self::Chart(Kind::Spectrum) => {
+                "Average spectral energy across the whole file and both channels. The analyzer uses 4096-sample FFT windows with a square-root Hann window and 50% overlap, then normalizes accumulated energy by channel count and file length and converts it to dB. Frequency is logarithmic, with values below 20 Hz hidden. Gray is the A comparison audio, blue the selected result, and orange the reference when available. These are analyzed levels, without playback loudness matching."
+            }
+            Self::Chart(Kind::Loudness) => {
+                "K-weighted stereo block level over time: 400 ms windows stepped every 100 ms, including the final partial window. The horizontal axis marks block start time in seconds; the vertical axis shows the block level in dB. All blocks are shown before the gates used for the Loudness measurement. Gray is the A comparison audio, blue the selected result, and orange the reference when available. Playback loudness matching does not change these curves."
+            }
+            Self::Chart(Kind::Histogram) => {
+                "Distribution of the same 400 ms K-weighted block levels used by the Loudness chart, sampled every 100 ms before gating. The horizontal axis is level in 1 dB bins; the vertical axis is the number of blocks, not audio frequency or a percentage. Only levels from −70 dB inclusive to +70 dB exclusive are counted. The app connects bin counts with lines. Longer files can have larger counts. Gray is A, blue the selected result, and orange the reference when available."
+            }
+            Self::Chart(Kind::Distribution) => {
+                "Frequency-versus-level distribution over the whole file, shown separately for each available source. The analyzer uses roughly 372 ms Hann windows with 50% overlap and 40 logarithmically spaced bands from 20 Hz to 20 kHz. It combines Mid and Side spectral energy and applies a +3 dB/octave tilt with its own scaling. The vertical axis spans −96 to 0 dB on that adjusted scale. Brighter areas indicate levels that occur more often, with vertical smoothing and normalization by window count. There is no time axis; these levels are not the Spectrum chart’s unadjusted levels."
+            }
+            Self::LimitingError => {
+                "Visualization of the gradient of the limiter’s weighted error objective, calculated after downsampling the limiter result. The backend peak-normalizes that gradient, adds 60 dB of gain, and sends it to FFmpeg’s showspectrumpic with logarithmic intensity scaling. Time runs horizontally and frequency vertically on a linear scale. It highlights the gradient’s time/frequency structure, rather than the waveform difference between original and mastered audio. Because each image is normalized separately, brightness cannot compare absolute limiting error between runs; use the numeric Limiting error measurement for that."
+            }
+        }
+    }
+}
+
 pub struct Plot {
     pub input: Series,
     pub output: Series,

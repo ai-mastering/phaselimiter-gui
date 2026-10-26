@@ -6,6 +6,11 @@ const SETTINGS_WIDTH: f32 = 330.;
 const HISTORY_WIDTH: f32 = 300.;
 
 impl App {
+    fn plot_heading(&self, help: plots::Help) -> Element<'_, Message> {
+        let topic = Topic::Plot(help);
+        self.help_body(topic, self.help_label(help.label(), topic))
+    }
+
     fn measurement_label(
         &self,
         label: &'static str,
@@ -371,7 +376,7 @@ impl App {
                 .label("Match loudness")
                 .on_toggle(Message::Equalize),
         );
-        let mut transport = column![controls];
+        let mut transport = column![controls, self.plot_heading(plots::Help::Waveform)];
         transport = transport.push(
             canvas(plots::Plot {
                 input: self
@@ -548,7 +553,7 @@ impl App {
         for kind in plots::Kind::ALL {
             detail = detail
                 .push(rule::horizontal(1))
-                .push(text(kind.to_string()));
+                .push(self.plot_heading(plots::Help::Chart(kind)));
             if kind == plots::Kind::Distribution {
                 for (label, analysis) in [
                     (self.comparison_label(), self.comparison_analysis()),
@@ -714,10 +719,7 @@ impl App {
         let image = job.output.with_extension("limiting-error.png");
         if image.is_file() {
             details = details
-                .push(
-                    text("Limiting-error spectrogram")
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                )
+                .push(self.plot_heading(plots::Help::LimitingError))
                 .push(iced::widget::image(image).width(Fill));
         }
         if let Some(command) = &job.command {
@@ -1280,6 +1282,45 @@ mod measurement_help_tests {
             }
             assert_eq!(app.open_help, None);
         }
+        assert_eq!(serde_json::to_value(&app.library.draft).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod plot_help_tests {
+    use super::*;
+
+    #[test]
+    fn chart_and_image_help_switches_without_changing_playback_or_settings() {
+        let mut app = App::default();
+        let before = serde_json::to_value(&app.library.draft).unwrap();
+        app.position = 12.;
+        app.region = Some((5., 15.));
+        for help in [plots::Help::Waveform]
+            .into_iter()
+            .chain(plots::Kind::ALL.map(plots::Help::Chart))
+            .chain([plots::Help::LimitingError])
+        {
+            let mut ui = iced_test::simulator(app.plot_heading(help));
+            ui.find(help.label()).unwrap();
+            assert!(ui.find(help.description()).is_err());
+            ui.click("i").unwrap();
+            for message in ui.into_messages() {
+                let _ = app.update(message);
+            }
+            assert_eq!(app.open_help, Some(Topic::Plot(help)));
+            let mut ui = iced_test::simulator(app.plot_heading(help));
+            assert!(
+                ui.find(help.description())
+                    .unwrap()
+                    .visible_bounds()
+                    .is_some()
+            );
+        }
+        let _ = app.update(Message::ToggleHelp(Topic::Plot(plots::Help::LimitingError)));
+        assert_eq!(app.open_help, None);
+        assert_eq!(app.position, 12.);
+        assert_eq!(app.region, Some((5., 15.)));
         assert_eq!(serde_json::to_value(&app.library.draft).unwrap(), before);
     }
 }
