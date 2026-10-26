@@ -22,6 +22,7 @@ mod preparation;
 mod reference;
 mod report;
 mod status;
+mod text_fields;
 mod theme;
 mod ui;
 mod windowing;
@@ -29,9 +30,10 @@ mod windowing;
 use comparison::{ComparisonChoice, settings_differences};
 use iced::widget::{
     button, canvas, checkbox, container, pick_list, progress_bar, row, rule, scrollable, slider,
-    text, text_input,
+    text,
 };
 use iced::{Fill, Subscription, Task};
+use text_fields::input as text_input;
 use theme::Theme;
 type Element<'a, Message> = iced::Element<'a, Message, Theme>;
 use library::{Library, Track};
@@ -145,10 +147,8 @@ enum Message {
     Equalize(bool),
     Tick,
     Prepared(PathBuf, Result<Arc<playback::Decoded>, String>),
-    Graph(plots::Kind),
-    Details,
-    CopyCommand(Uuid),
-    CopyLog(Uuid),
+    LogText(iced::widget::text_editor::Action),
+    ReadOnlyEdit,
     CopyText(String),
     StorageSize(u64),
     OpenLibrary,
@@ -178,6 +178,8 @@ struct App {
     _library_lock: Option<std::fs::File>,
     input: String,
     show_audio_path: bool,
+    log_text: iced::widget::text_editor::Content,
+    log_version: Option<(Uuid, usize)>,
     selected: Option<ResultKey>,
     active: Option<Active>,
     running: bool,
@@ -193,12 +195,10 @@ struct App {
     draft_reference: reference::State,
     force_analysis: HashSet<AudioKey>,
 
-    show_details: bool,
     show_limiter_details: bool,
     show_optimization: bool,
     open_help: Option<descriptions::Topic>,
     output_side: bool,
-    graph: plots::Kind,
     analysis_queue: VecDeque<AudioKey>,
     analyzing: Option<AudioKey>,
     importing: usize,
@@ -207,6 +207,7 @@ struct App {
     prepared: preparation::Cache,
     loading: bool,
     loaded: bool,
+    play_when_ready: bool,
     active_key: Option<AudioKey>,
     equalize: bool,
     region: Option<(f64, f64)>,
@@ -229,6 +230,8 @@ impl Default for App {
             _library_lock: None,
             input: String::new(),
             show_audio_path: false,
+            log_text: iced::widget::text_editor::Content::new(),
+            log_version: None,
             selected: None,
             active: None,
             running: false,
@@ -244,12 +247,10 @@ impl Default for App {
             reference_pending: None,
             draft_reference: reference::State::default(),
             force_analysis: HashSet::new(),
-            show_details: false,
             show_limiter_details: false,
             show_optimization: false,
             open_help: None,
             output_side: false,
-            graph: plots::Kind::Spectrum,
             analysis_queue: VecDeque::new(),
             analyzing: None,
             importing: 0,
@@ -258,6 +259,7 @@ impl Default for App {
             finalizing: HashSet::new(),
             loading: false,
             loaded: false,
+            play_when_ready: false,
             active_key: None,
             equalize: true,
             region: None,
@@ -310,6 +312,7 @@ impl App {
                 ))
             }
         }
+        app.sync_log();
         app.invalidate_draft_reference(true);
         let task = app.prepare();
         let analysis = app.start_analysis();
@@ -389,6 +392,22 @@ impl App {
         }
         true
     }
+    fn sync_log(&mut self) {
+        // Logs are append-only. Avoid rebuilding the full text on playback ticks.
+        let version = self.job().map(|job| (job.id, job.log.len()));
+        if self.log_version != version {
+            let log = self
+                .job()
+                .map_or_else(String::new, |job| job.log.join("\n"));
+            let cursor = self.log_text.cursor();
+            self.log_text = iced::widget::text_editor::Content::with_text(&log);
+            if self.log_version.map(|v| v.0) == version.map(|v| v.0) {
+                self.log_text.move_to(cursor);
+            }
+            self.log_version = version;
+        }
+    }
+
     fn track(&self) -> Option<&Track> {
         let id = self.selected?.0;
         self.library.tracks.iter().find(|t| t.id == id)
@@ -928,6 +947,7 @@ impl App {
                 if self.selected.map(|k| k.0) != Some(key.0) || self.comparison_job == Some(key.1) {
                     self.comparison_job = None;
                 }
+                self.play_when_ready = false;
                 self.selected = Some(key);
                 self.library.draft = settings;
                 self.numeric_edits.clear();
@@ -983,6 +1003,7 @@ impl App {
                     }
                     if self.selected != previous_selected {
                         self.player.pause();
+                        self.play_when_ready = false;
                         self.loaded = false;
                         self.active_key = None;
                         self.loading = false;
@@ -1005,20 +1026,10 @@ impl App {
                     save = true;
                 }
             }
-            Message::CopyCommand(id) => {
-                if let Some(command) = self
-                    .library
-                    .jobs
-                    .iter()
-                    .find(|job| job.id == id)
-                    .and_then(|job| job.command.clone())
-                {
-                    tasks.push(iced::clipboard::write(command));
-                }
-            }
-            Message::CopyLog(id) => {
-                if let Some(job) = self.library.jobs.iter().find(|job| job.id == id) {
-                    tasks.push(iced::clipboard::write(job.log.join("\n")));
+            Message::ReadOnlyEdit => {}
+            Message::LogText(action) => {
+                if !action.is_edit() {
+                    self.log_text.perform(action);
                 }
             }
             Message::CopyText(value) => tasks.push(iced::clipboard::write(value)),
@@ -1136,22 +1147,53 @@ impl App {
                 }
             }
             Message::Side(output) => {
-                self.output_side = output;
-                tasks.push(self.prepare());
-                save = true;
+                if self.track().is_none()
+                    || output
+                        && !self
+                            .job()
+                            .is_some_and(|job| job.status == Status::Succeeded)
+                {
+                    return Task::none();
+                }
+                let playing = self.player.status().2;
+                if playing && self.active_key == self.side_key(output)
+                    || self.output_side == output && (playing || self.play_when_ready)
+                {
+                    self.output_side = output;
+                    self.play_when_ready = false;
+                    self.player.pause();
+                    if self.active_key == self.listening_key() {
+                        self.loading = false;
+                    }
+                    save = true;
+                } else {
+                    self.output_side = output;
+                    self.play_when_ready = !playing;
+                    tasks.push(self.prepare());
+                    save = true;
+                }
             }
             Message::Play => {
-                if self.player.status().2 {
+                if self.player.status().2 || self.play_when_ready {
+                    self.play_when_ready = false;
                     self.player.pause();
-                } else if self.loaded {
-                    match self.player.play() {
-                        Ok(()) => {}
-                        Err(e) => self.error = Some(e),
-                    }
+                } else {
+                    self.play_when_ready = true;
+                    tasks.push(self.prepare());
                 }
             }
             Message::Seek(seconds) => self.player.seek(seconds),
-            Message::SeekFraction(fraction) => self.player.seek(self.duration * fraction as f64),
+            Message::SeekFraction(fraction) => {
+                let seconds = self.duration * fraction as f64;
+                if self
+                    .region
+                    .is_some_and(|(start, end)| seconds < start || seconds >= end)
+                {
+                    self.region = None;
+                    self.player.region(None);
+                }
+                self.player.seek(seconds);
+            }
             Message::Region(a, b) => {
                 self.region = Some((self.duration * a as f64, self.duration * b as f64));
                 self.player.region(self.region);
@@ -1215,8 +1257,6 @@ impl App {
             Message::Prepared(path, result) => {
                 self.preparation_finished(path, result);
             }
-            Message::Graph(kind) => self.graph = kind,
-            Message::Details => self.show_details = !self.show_details,
             Message::StorageSize(bytes) => self.storage_bytes = bytes,
             Message::OpenLibrary => match self.library_folder() {
                 Ok(root) => tasks.push(Task::perform(
@@ -1258,6 +1298,7 @@ impl App {
                 Err(e) => self.error = Some(e),
             },
             Message::Close => {
+                self.play_when_ready = false;
                 self.closing = true;
                 if let Some(cancel) = &self.draft_reference.cancel {
                     cancel.store(true, Ordering::Relaxed);
@@ -1287,6 +1328,7 @@ impl App {
         tasks.push(self.start_next());
         tasks.push(self.start_draft_reference());
         tasks.push(self.start_analysis());
+        self.sync_log();
         Task::batch(tasks)
     }
     fn default_export(&self, job: &Job) -> String {
@@ -2305,12 +2347,7 @@ mod tests {
             iced::Size::new(1000., 650.),
             app.view(),
         );
-        assert!(
-            ui.find("Changes from selected result")
-                .unwrap()
-                .visible_bounds()
-                .is_some()
-        );
+        assert!(ui.find("Changes from selected result").is_err());
         assert!(
             ui.find("• Previous: -9")
                 .unwrap()
@@ -2479,25 +2516,29 @@ mod tests {
     }
 
     #[test]
-    fn long_filenames_preserve_workspace_actions_and_source_copy() {
+    fn long_filenames_preserve_workspace_actions_and_read_only_source_path() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
         app.library.tracks[0].name = format!("{}_realfinal.wav", "mymusic_piano_eq_".repeat(15));
         app.library.tracks[0].source = dir.path().join(&app.library.tracks[0].name);
         let expected = app.library.tracks[0].source.display().to_string();
+        app.sync_log();
         for width in [1000., 1280.] {
             let mut ui = iced_test::Simulator::with_size(
                 Default::default(),
                 iced::Size::new(width, 800.),
                 app.view(),
             );
-            assert!(ui.find("Play").unwrap().visible_bounds().is_some());
-            ui.click("Copy source path").unwrap();
             assert!(
-                ui.into_messages()
-                    .any(|m| matches!(m, Message::CopyText(path) if path == expected))
+                ui.find(iced::widget::Id::from("play-a"))
+                    .unwrap()
+                    .visible_bounds()
+                    .is_some()
             );
+            assert!(ui.find("Copy source path").is_err());
+            assert!(ui.find("Source path").is_ok());
         }
+        assert_eq!(app.track().unwrap().source.display().to_string(), expected);
     }
 
     #[test]
@@ -2635,20 +2676,23 @@ mod tests {
                 .unwrap()
                 .visible_bounds()
                 .unwrap();
-            let play = ui.find("Play").unwrap().visible_bounds().unwrap();
+            let play = ui
+                .find(iced::widget::Id::from("play-a"))
+                .unwrap()
+                .visible_bounds()
+                .unwrap();
             let settings = ui
                 .find("Mastering settings")
                 .unwrap()
                 .visible_bounds()
                 .unwrap();
             assert!(history.x < play.x && play.x < settings.x);
-            assert!(
-                ui.find("Click: seek · Drag: loop")
-                    .unwrap()
-                    .visible_bounds()
-                    .is_some()
-            );
-            assert!(ui.find("Drop audio to master").unwrap().bounds().height <= 18.);
+            assert!(ui.find("Click: seek · Drag: loop").is_err());
+            assert!(ui.find("Drop audio to master").is_err());
+            let master = ui.find("Master audio…").unwrap().visible_bounds().unwrap();
+            let drop = ui.find("or drop audio").unwrap().visible_bounds().unwrap();
+            assert!((master.center_y() - drop.center_y()).abs() < 1.);
+            assert!(drop.height <= 18.);
             ui.click(app.variation_label()).unwrap();
             assert!(ui.into_messages().any(|m| matches!(m, Message::Master)));
         }
@@ -2666,21 +2710,194 @@ mod tests {
             "histogram": [{"db":-60,"frequency":0},{"db":-24,"frequency":120000},{"db":-12,"frequency":240000},{"db":0,"frequency":0}],
             "waveform": [0.0, 1.0, -1.0, 0.0]
         })));
-        for kind in plots::Kind::ALL {
-            app.graph = kind;
-            for width in [1000., 1280.] {
-                let mut ui = iced_test::Simulator::with_size(
-                    Default::default(),
-                    iced::Size::new(width, 900.),
-                    app.view(),
-                );
+        app.queue_master().unwrap();
+        app.selected = Some((app.library.tracks[0].id, app.library.jobs[0].id));
+        app.library.jobs[0].status = Status::Succeeded;
+        app.library.jobs[0].command = Some(format!(
+            "phase_limiter {}",
+            "--example-long-option=value ".repeat(30)
+        ));
+        app.library.jobs[0].log = (0..100)
+            .map(|i| format!("Backend progress line {i}: {}", "details ".repeat(12)))
+            .collect();
+        app.sync_log();
+        for width in [1000., 1280.] {
+            let mut ui = iced_test::Simulator::with_size(
+                Default::default(),
+                iced::Size::new(width, 2400.),
+                app.view(),
+            );
+            assert!(
+                ui.snapshot(&theme::Theme)
+                    .unwrap()
+                    .matches_image(format!("{directory}/workspace-charts-{width}.png"))
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn processing_text_is_read_only_selectable_and_tracks_the_selected_result() {
+        use iced::widget::text_editor::{Action, Edit};
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        let id = app.library.jobs[0].id;
+        app.library.jobs[0].command = Some("phase_limiter --input '日本語 mix.wav'".into());
+        app.library.jobs[0].log = (0..501).map(|i| format!("log {i}")).collect();
+        app.library.jobs[0].log.push("x".repeat(2100));
+        let expected_log = app.library.jobs[0].log.join("\n");
+        let _ = app.update(Message::Select((app.library.tracks[0].id, id)));
+        let _ = app.update(Message::LogText(Action::SelectAll));
+        assert_eq!(
+            app.log_text.selection().as_deref(),
+            Some(expected_log.as_str())
+        );
+        let _ = app.update(Message::LogText(Action::Edit(Edit::Insert('x'))));
+        assert_eq!(app.log_text.text(), expected_log);
+        app.library.jobs[0].log.push("next line".into());
+        app.sync_log();
+        assert!(app.log_text.text().ends_with("next line"));
+        app.queue_master().unwrap();
+        let next_id = app.library.jobs[1].id;
+        let _ = app.update(Message::Select((app.library.tracks[0].id, next_id)));
+        assert_eq!(app.log_text.text(), "");
+    }
+
+    #[test]
+    fn ab_buttons_start_cancel_and_retarget_pending_playback() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        let id = app.library.jobs[0].id;
+        app.selected = Some((app.library.tracks[0].id, id));
+        let _ = app.update(Message::Side(true));
+        assert!(!app.play_when_ready); // Unfinished B cannot play.
+        let _ = app.update(Message::Side(false));
+        assert!(app.play_when_ready && app.loading);
+        let _ = app.update(Message::Side(false));
+        assert!(!app.play_when_ready);
+        let _ = app.update(Message::Side(false));
+        app.library.jobs[0].status = Status::Succeeded;
+        app.library.jobs[0].output_hash = Some("test".into());
+        let _ = app.update(Message::Side(true));
+        assert!(app.output_side && app.play_when_ready);
+        let _ = app.update(Message::Side(true));
+        assert!(!app.play_when_ready);
+        let input = app.library.tracks[0].input.clone();
+        app.preparation_finished(
+            input.clone(),
+            Ok(playback::test_audio(&[[0., 0.]; 100], Some(&input))),
+        );
+        assert!(!app.player.status().2); // A's late decode must not start playback.
+        assert_eq!(app.active_key, None);
+        let _ = app.update(Message::Side(true));
+        assert!(app.play_when_ready);
+        let output = app.library.jobs[0].output.clone();
+        app.preparation_finished(output, Err("decode failed".into()));
+        assert!(!app.play_when_ready && !app.loading);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "Run explicitly with an ALSA null-device configuration"]
+    fn ab_buttons_play_pause_and_switch_with_a_prepared_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        let job = &mut app.library.jobs[0];
+        job.status = Status::Succeeded;
+        std::fs::write(&job.output, b"prepared output").unwrap();
+        job.output_hash = Some(library::hash(&job.output).unwrap());
+        app.selected = Some((app.library.tracks[0].id, job.id));
+        for path in [
+            app.library.tracks[0].input.clone(),
+            app.library.jobs[0].output.clone(),
+        ] {
+            let audio = playback::test_audio(&vec![[0.01, -0.01]; 44100 * 10], Some(&path));
+            app.prepared.insert(path, audio);
+        }
+        let _ = app.update(Message::Side(false));
+        assert!(app.player.status().2, "{:?}", app.error);
+        assert!(!app.output_side);
+        let _ = app.update(Message::Side(true));
+        assert!(app.player.status().2 && app.output_side);
+        let _ = app.update(Message::Side(true));
+        assert!(!app.player.status().2);
+        let _ = app.update(Message::Side(true));
+        assert!(app.player.status().2);
+        let _ = app.update(Message::Side(false));
+        assert!(app.player.status().2 && !app.output_side);
+        let _ = app.update(Message::Side(false));
+        assert!(!app.player.status().2);
+    }
+
+    #[test]
+    fn waveform_click_preserves_loop_inside_and_clears_it_outside() {
+        let mut app = App {
+            duration: 80.,
+            ..App::default()
+        };
+        for fraction in [0.25, 0.5, 0.125, 0.75, 0.875] {
+            let _ = app.update(Message::Region(0.25, 0.75));
+            let _ = app.update(Message::SeekFraction(fraction));
+            let expected = if (0.25..0.75).contains(&fraction) {
+                Some((20., 60.))
+            } else {
+                None
+            };
+            assert_eq!(app.region, expected);
+        }
+        let _ = app.update(Message::SeekFraction(0.5));
+        assert_eq!(app.region, None);
+        let _ = app.update(Message::Region(0.125, 0.5));
+        assert_eq!(app.region, Some((10., 40.)));
+    }
+
+    #[test]
+    fn analysis_stacks_charts_and_shows_processing_details_without_toggles() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        app.selected = Some((app.library.tracks[0].id, app.library.jobs[0].id));
+        for width in [1000., 1280.] {
+            let mut ui = iced_test::Simulator::with_size(
+                Default::default(),
+                iced::Size::new(width, 800.),
+                app.view(),
+            );
+            let mut previous_bottom = 0.;
+            for label in [
+                "Spectrum",
+                "Time (s) / loudness (dB)",
+                "Histogram",
+                "Distribution",
+                "Processing details",
+                "Backend log",
+                "Source path",
+            ] {
+                let bounds = ui.find(label).unwrap().bounds();
                 assert!(
-                    ui.snapshot(&theme::Theme)
-                        .unwrap()
-                        .matches_image(format!("{directory}/workspace-{kind}-{width}.png"))
-                        .unwrap()
+                    bounds.y >= previous_bottom,
+                    "{label} must follow the previous section"
                 );
+                previous_bottom = bounds.y + bounds.height;
             }
+            assert!(ui.find("Hide processing details").is_err());
+            assert!(
+                ui.find(iced::widget::Id::from("source-path"))
+                    .unwrap()
+                    .bounds()
+                    .height
+                    <= 28.
+            );
+            assert!(ui.find("Created: unknown (imported history)").is_err());
+            assert!(
+                ui.find(iced::widget::Id::from("play-a"))
+                    .unwrap()
+                    .visible_bounds()
+                    .is_some()
+            );
         }
     }
 

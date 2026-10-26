@@ -1,6 +1,7 @@
 //! Transactional application preferences and their dialog lifecycle.
+use crate::text_fields::input as text_input;
 use crate::{App, Element, Field, Message, descriptions::Topic, model::AppSettings, theme};
-use iced::widget::{button, column, container, row, rule, scrollable, space, text, text_input};
+use iced::widget::{button, column, container, row, rule, scrollable, space, text};
 use iced::{Fill, Task, window};
 use std::path::PathBuf;
 

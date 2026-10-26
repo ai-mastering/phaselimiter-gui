@@ -1,8 +1,9 @@
 //! The draft stores a source path; prepared reports are transient execution state.
+use crate::text_fields::input as text_input;
 use crate::{App, Element, Field, Message, analysis, library, theme};
 use iced::{
     Task,
-    widget::{button, column, row, text, text_input},
+    widget::{button, column, row, text},
 };
 use std::{
     path::Path,

@@ -66,11 +66,12 @@ impl App {
         };
         container(
             column![
-                text_editor(&report.content)
-                    .font(iced::Font::MONOSPACE)
-                    .size(12)
-                    .height(Fill)
-                    .on_action(|action| Message::Report(Event::Select(action))),
+                crate::text_fields::read_only_editor(
+                    "report-scroll",
+                    &report.content,
+                    Fill,
+                    |action| Message::Report(Event::Select(action))
+                ),
                 row![
                     button("Copy report")
                         .height(30)
@@ -175,7 +176,7 @@ mod tests {
         app.selected = Some((uuid::Uuid::nil(), uuid::Uuid::from_u128(1)));
         app.comparison_job = Some(uuid::Uuid::from_u128(2));
         app.library.jobs[1].analysis_error = Some("Saved comparison report is missing".into());
-        let error = "Compare A analysis: Saved comparison report is missing";
+        let error = "Source A analysis: Saved comparison report is missing";
         assert!(app.status_messages().iter().any(|m| m == error));
         let _ = app.update_report(Event::Open);
         let snapshot = app.report.as_ref().unwrap().content.text();
