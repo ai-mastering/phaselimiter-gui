@@ -34,5 +34,8 @@ iced_test = "=0.14.0"
 
 [profile.release]
 strip = "debuginfo"
+
+[build-dependencies]
+winresource = "0.1.30"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSFileManager", "NSArray", "NSURL", "NSString", "NSPathUtilities"] }

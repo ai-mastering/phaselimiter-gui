@@ -55,6 +55,11 @@ def main():
         source = None
         try:
             target = wait_for(find_window, "GUI window")
+            icon = target.get_full_property(connection.intern_atom("_NET_WM_ICON"), X.AnyPropertyType)
+            assert icon is not None, "Window has no application icon"
+            assert list(icon.value[:2]) == [256, 256]
+            assert len(icon.value) == 2 + 256 * 256
+            assert target.get_wm_class() == ("com.aimastering.phaselimiter-gui",) * 2
             library_file = pathlib.Path(env["XDG_DATA_HOME"]) / "phaselimiter-gui" / "library.json"
             # This independent X11 client owns the selection, like a file manager.
             selection = connection.intern_atom("XdndSelection")

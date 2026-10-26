@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Phaselimiter
+Comment=Audio mastering and peak limiting
+Exec=phaselimiter-gui
+Icon=com.aimastering.phaselimiter-gui
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=audio;mastering;limiter;
+StartupWMClass=com.aimastering.phaselimiter-gui

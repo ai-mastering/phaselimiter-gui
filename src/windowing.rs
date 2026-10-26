@@ -2,6 +2,25 @@
 use crate::{App, Element, Message, menu, preferences, report};
 use iced::{Task, event, keyboard, window};
 
+pub(crate) fn settings() -> window::Settings {
+    let icon = image::load_from_memory(include_bytes!("../build/icons/phaselimiter-256.png"))
+        .ok()
+        .and_then(|image| {
+            let rgba = image.into_rgba8();
+            let (width, height) = rgba.dimensions();
+            window::icon::from_rgba(rgba.into_raw(), width, height).ok()
+        });
+    window::Settings {
+        icon,
+        #[cfg(target_os = "linux")]
+        platform_specific: window::settings::PlatformSpecific {
+            application_id: "com.aimastering.phaselimiter-gui".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 impl App {
     pub(super) fn boot() -> (Self, Task<Message>) {
         let (mut app, load) = Self::load();
@@ -9,7 +28,7 @@ impl App {
             size: iced::Size::new(1280., 800.),
             min_size: Some(iced::Size::new(1000., 480.)),
             exit_on_close_request: false,
-            ..Default::default()
+            ..settings()
         });
         app.main_window = id;
         (app, Task::batch([load, open.map(Message::WindowOpened)]))
@@ -136,6 +155,20 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_icon_decodes_with_transparency() {
+        let settings = settings();
+        let (rgba, size) = settings.icon.unwrap().into_raw();
+        assert_eq!(size, iced::Size::new(256, 256));
+        assert!(rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 0));
+        assert!(rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 255));
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            settings.platform_specific.application_id,
+            "com.aimastering.phaselimiter-gui"
+        );
+    }
 
     #[test]
     fn parent_interactions_are_blocked_while_background_updates_continue() {

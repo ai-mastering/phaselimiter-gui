@@ -7,7 +7,9 @@ Use Python 3.12, CMake 3.27.9, Ninja 1.13.0, the pinned Rust toolchain, and a na
 From the GUI checkout, after cloning the exact pinned backend revision and its recursive submodules into `build/audio/backend`:
 
 ```sh
-python -m pip install cmake==3.27.9 ninja==1.13.0
+python -m pip install cmake==3.27.9 ninja==1.13.0 -r script/requirements-icons.txt
+# Install optipng with apt, Homebrew or Chocolatey first.
+python script/build-icons.py
 # Unix shell; on Windows run only this command in MSYS2 MINGW64.
 bash script/build-ffmpeg.sh
 # Native environment, including the VS developer environment on Windows:
@@ -41,7 +43,7 @@ Publish `Phaselimiter-sources.tar.gz` alongside all four binary archives. The Li
 
 - The exact backend and recursively pinned submodule sources, with `SOURCE-REVISION` identifying the snapshot.
 - Unmodified, checksum-verified dependency source archives (Boost, FFmpeg, LAME, zlib, libsndfile, libpng, libjpeg-turbo, oneTBB, OpenMP and LLVM CMake helpers), plus the Armadillo header package.
-- The GUI source, Cargo lockfile, native build scripts and version manifest.
+- The GUI source, original icon PNG, icon generation script, Cargo lockfile, native build scripts and version manifest. Derived icons are excluded; regenerate them with `python script/build-icons.py` before building.
 
 To rebuild from that archive, extract it, use `gui/` as the repository, create `gui/build/audio/`, move `backend/` there and move `downloads/` there. The scripts accept the source snapshot's revision marker in place of `.git`. Run the native commands above. Rust crate sources are fetched according to Cargo.lock. IPP is a proprietary redistributable SDK: x86 builds retrieve the exact pinned Intel packages in the backend manifest; these and Apple's SDK are not placed in the source archive. Apple Silicon does not use IPP.
 

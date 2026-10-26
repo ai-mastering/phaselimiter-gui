@@ -58,7 +58,7 @@ def source_archive(build, destination):
         marker = tarfile.TarInfo("backend/SOURCE-REVISION")
         marker.size = len(revision)
         archive.addfile(marker, io.BytesIO(revision))
-        for name in ["src", "script", "packaging", ".cargo", ".github", "Cargo.toml", "Cargo.lock",
+        for name in ["src", "script", "packaging", "assets", ".cargo", ".github", "Cargo.toml", "Cargo.lock",
                      "rust-toolchain.toml", "build.rs", "LICENSE", "README.md"]:
             archive.add(ROOT / name, arcname="gui/" + name,
                         filter=lambda item: None if "__pycache__" in item.name else item)
@@ -123,6 +123,9 @@ def package(build, target, sources=False):
         run(["codesign", "--force", "--sign", "-", payload])
         run(["codesign", "--verify", "--deep", "--strict", payload])
     elif not build.is_windows:
+        shutil.copy2(ROOT / "build/icons/phaselimiter-512.png", payload / "phaselimiter.png")
+        shutil.copy2(ROOT / "packaging/com.aimastering.phaselimiter-gui.desktop", payload)
+        shutil.copy2(ROOT / "script/install-desktop.py", payload)
         # The GUI's libgcc dependency also resolves to the bundled copy.
         run(["patchelf", "--set-rpath", "$ORIGIN/phaselimiter/lib", executable_dir / gui.name])
         with (resource / "runtime-versions.txt").open("a") as output:

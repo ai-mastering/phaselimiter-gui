@@ -55,7 +55,7 @@ impl App {
             position: window::Position::Centered,
             minimizable: false,
             exit_on_close_request: false,
-            ..Default::default()
+            ..crate::windowing::settings()
         });
         self.preferences = Some(Dialog {
             id,

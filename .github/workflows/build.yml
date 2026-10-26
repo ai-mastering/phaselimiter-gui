@@ -35,21 +35,21 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install build orchestration tools
-        run: python -m pip install cmake==3.27.9 ninja==1.13.0
+        run: python -m pip install cmake==3.27.9 ninja==1.13.0 -r script/requirements-icons.txt
       - name: Linux build and windowing tools
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang libclang-dev nasm pkg-config patchelf ffmpeg libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev xvfb xauth
+          sudo apt-get install -y build-essential clang libclang-dev nasm pkg-config patchelf ffmpeg optipng libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev xvfb xauth
           python -m pip install python-xlib==0.33
       - name: macOS build tools (runner's official Xcode SDK)
         if: runner.os == 'macOS'
         run: |
-          brew install nasm pkgconf ffmpeg
+          brew install nasm pkgconf ffmpeg optipng
           xcrun --sdk macosx --show-sdk-path
-      - name: Windows test-only FFmpeg (upstream H.264 visualizer checks)
+      - name: Windows FFmpeg and icon optimizer
         if: runner.os == 'Windows'
-        run: choco install ffmpeg -y --no-progress
+        run: choco install ffmpeg optipng -y --no-progress
       - uses: msys2/setup-msys2@v2
         if: runner.os == 'Windows'
         with:
@@ -68,6 +68,10 @@ jobs:
             throw "Expected the Visual Studio linker, found: $linker"
           }
           Write-Host "MSVC linker: $linker"
+      - name: Generate and optimize application icons
+        run: python script/build-icons.py
+      - name: Verify generated icon formats
+        run: python script/test-icons.py
       - name: Read pinned backend revision
         id: backend
         shell: bash

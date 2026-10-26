@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+python3 script/build-icons.py
 
 if ! command -v cargo >/dev/null && [[ -f "$HOME/.cargo/env" ]]; then
     source "$HOME/.cargo/env"

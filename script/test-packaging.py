@@ -192,8 +192,11 @@ class CorrespondingSources(unittest.TestCase):
             (backend / 'README.md').write_text('backend source')
             subprocess.run(['git', '-C', str(backend), 'add', 'README.md'], check=True)
             gui = root / 'gui'
-            for name in ('src', 'script', 'packaging', '.cargo', '.github'):
+            for name in ('src', 'script', 'packaging', 'assets', '.cargo', '.github'):
                 (gui / name).mkdir(parents=True)
+            (gui / 'assets/icon.png').write_bytes(b'icon fixture')
+            (gui / 'build/icons').mkdir(parents=True)
+            (gui / 'build/icons/phaselimiter.ico').write_bytes(b'generated icon')
             for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'build.rs', 'LICENSE', 'README.md'):
                 (gui / name).write_text('source snapshot')
             pins = {'backend': {'revision': 'a' * 40}, 'sources': {'library': {
@@ -206,6 +209,8 @@ class CorrespondingSources(unittest.TestCase):
                 self.assertEqual(archive.extractfile('downloads/' + source.name).read(), source.read_bytes())
                 self.assertEqual(archive.extractfile('backend/SOURCE-REVISION').read(), b'a' * 40 + b'\n')
                 self.assertEqual(archive.extractfile('gui/build.rs').read(), b'source snapshot')
+                self.assertEqual(archive.extractfile('gui/assets/icon.png').read(), b'icon fixture')
+                self.assertNotIn('gui/build/icons/phaselimiter.ico', archive.getnames())
 
 
 class MacMetadata(unittest.TestCase):
@@ -225,6 +230,38 @@ class MacMetadata(unittest.TestCase):
             self.assertEqual(info['CFBundleShortVersionString'], package['version'])
             self.assertEqual(info['CFBundleVersion'], package['metadata']['macos']['bundle-version'])
             self.assertEqual(info['LSMinimumSystemVersion'], package['metadata']['macos']['minimum-system-version'])
+            icon = app / 'Contents/Resources' / info['CFBundleIconFile']
+            self.assertEqual(icon.read_bytes(), (package_common.ROOT / 'build/icons/phaselimiter.icns').read_bytes())
+            self.assertTrue(icon.read_bytes().startswith(b'icns'))
+
+
+class LinuxDesktop(unittest.TestCase):
+    def test_registration_uses_extracted_location_and_updates_after_move(self):
+        import package_common
+        spec = importlib.util.spec_from_file_location('install_desktop', Path(__file__).with_name('install-desktop.py'))
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / '日本語 audio %f $HOME `test` "quoted"'
+            bundle.mkdir()
+            (bundle / 'phaselimiter-gui').touch()
+            (bundle / 'phaselimiter.png').write_bytes(b'icon fixture')
+            shutil.copy2(package_common.ROOT / 'packaging' / (installer.APP_ID + '.desktop'), bundle)
+            data = root / 'user data'
+            entry = installer.install(bundle, data)
+            content = entry.read_text()
+            self.assertIn('%%f', content)
+            self.assertIn(r'\\$HOME', content)
+            self.assertIn(r'\\"quoted\\"', content)
+            self.assertIn('Icon=' + str(data / 'icons/hicolor/512x512/apps' / (installer.APP_ID + '.png')), content)
+            if shutil.which('desktop-file-validate'):
+                subprocess.run(['desktop-file-validate', str(entry)], check=True)
+            moved = root / 'moved'
+            bundle.rename(moved)
+            self.assertEqual(installer.install(moved, data), entry)
+            self.assertIn(f'Exec="{moved}/phaselimiter-gui"', entry.read_text())
+            self.assertNotIn('%%f', entry.read_text())
 
 
 class CargoOutputDirectory(unittest.TestCase):

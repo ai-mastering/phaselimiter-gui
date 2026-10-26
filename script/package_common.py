@@ -1,6 +1,7 @@
 """Shared metadata for standalone and complete application bundles."""
 import json
 import plistlib
+import shutil
 import subprocess
 import tomllib
 import zipfile
@@ -19,6 +20,9 @@ def cargo_target_directory():
 
 
 def write_macos_plist(app):
+    resources = app / 'Contents/Resources'
+    resources.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / 'build/icons/phaselimiter.icns', resources / 'phaselimiter.icns')
     with (ROOT / 'Cargo.toml').open('rb') as source:
         package = tomllib.load(source)['package']
     with (app / 'Contents/Info.plist').open('wb') as output:
@@ -26,6 +30,7 @@ def write_macos_plist(app):
             'CFBundleExecutable': package['name'],
             'CFBundleIdentifier': 'com.aimastering.phaselimiter-gui',
             'CFBundleName': 'Phaselimiter',
+            'CFBundleIconFile': 'phaselimiter.icns',
             'CFBundlePackageType': 'APPL',
             'CFBundleShortVersionString': package['version'],
             'CFBundleVersion': package['metadata']['macos']['bundle-version'],

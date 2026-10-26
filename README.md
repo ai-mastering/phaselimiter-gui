@@ -7,8 +7,12 @@ The GUI uses Rust, iced 0.14 and the tiny-skia CPU renderer. It does not require
 ## Build and run
 
 Install Rust using [rustup](https://rustup.rs/). The repository pins its toolchain in `rust-toolchain.toml`.
+Install Python 3.10+ and optipng (`apt install optipng`, `brew install optipng`,
+or `choco install optipng`), then generate the application icons before using Cargo.
 
 ```sh
+python3 -m pip install -r script/requirements-icons.txt
+python3 script/build-icons.py
 cargo run --locked --release
 ```
 
@@ -63,6 +67,35 @@ phaselimiter/
 ```
 
 `cargo build` builds the GUI only. The CI builds the complete layout, including backend libraries and licenses. The x86-64 backend requires AVX (Sandy Bridge or newer); Apple Silicon uses NEON and the system Accelerate framework.
+
+## Application icon
+
+The window icon is embedded in the GUI. Windows builds also embed the icon in the
+executable; both macOS packagers include the icon in `Phaselimiter.app`.
+
+For the Linux portable distribution, keep the extracted folder in its permanent
+location and run `python3 /path/to/Phaselimiter/install-desktop.py` to register it
+in your user application menu. This installs the icon and a desktop entry under
+`${XDG_DATA_HOME:-~/.local/share}`. Run it again if you move the folder. Registration
+requires Python 3; launching the application itself does not. To unregister it,
+remove `applications/com.aimastering.phaselimiter-gui.desktop` and
+`icons/hicolor/512x512/apps/com.aimastering.phaselimiter-gui.png` under that data directory.
+
+Only the original PNG and its generation prompt are kept under `assets/icons/`.
+CI installs Pillow and optipng on every platform, then runs
+`python script/build-icons.py` before tests and builds. The script resizes the
+original with Pillow, losslessly optimizes each PNG with optipng, checks that
+optimization preserves RGBA pixels, and packs those PNG streams into ICO and ICNS.
+The original image is not modified, and pngquant is not used.
+
+All derived images go to `build/icons/`, which is ignored by Git and excluded
+from source archives. After a fresh checkout, changing the original image or
+removing `build/`, rerun `python3 script/build-icons.py` before direct Cargo
+commands. The macOS and Windows build scripts run generation automatically;
+install `script/requirements-icons.txt` and optipng before using them. These tools
+are build dependencies only; application users do not need them. Windows
+cross-builds also require LLVM's `llvm-rc`; `script/build-windows.sh` locates it
+or honors `RC_PATH`.
 
 ## Windows x86-64
 
@@ -132,6 +165,8 @@ A local cross-build cannot verify macOS windowing behavior; run the result on yo
 ## Tests and CI
 
 ```sh
+python3 script/build-icons.py
+python3 script/test-icons.py
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked

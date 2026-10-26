@@ -31,7 +31,7 @@ impl App {
                     min_size: Some(iced::Size::new(440., 280.)),
                     position: window::Position::Centered,
                     exit_on_close_request: false,
-                    ..Default::default()
+                    ..crate::windowing::settings()
                 });
                 self.report = Some(Report { id, content });
                 return open.map(Message::WindowOpened);
