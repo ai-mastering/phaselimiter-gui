@@ -7,6 +7,7 @@ mod analysis_cache;
 mod backend;
 mod comparison;
 mod controls;
+mod descriptions;
 mod diagnostics;
 mod labels;
 mod library;
@@ -21,8 +22,8 @@ mod ui;
 
 use comparison::{ComparisonChoice, settings_differences};
 use iced::widget::{
-    button, canvas, checkbox, column, container, pick_list, progress_bar, row, rule, scrollable,
-    slider, text, text_input,
+    button, canvas, checkbox, container, pick_list, progress_bar, row, rule, scrollable, slider,
+    text, text_input,
 };
 use iced::{Fill, Subscription, Task};
 use theme::Theme;
@@ -110,6 +111,7 @@ enum Message {
     ShowMastering,
     ToggleLimiterDetails,
     ToggleOptimization,
+    ToggleHelp(descriptions::Topic),
     ToggleAppSettings,
     BrowseSettingPath(Field),
     SettingPathPicked(Field, Option<PathBuf>),
@@ -180,6 +182,7 @@ struct App {
     show_details: bool,
     show_limiter_details: bool,
     show_optimization: bool,
+    open_help: Option<descriptions::Topic>,
     output_side: bool,
     graph: plots::Kind,
     analysis_queue: VecDeque<AudioKey>,
@@ -228,6 +231,7 @@ impl Default for App {
             show_details: false,
             show_limiter_details: false,
             show_optimization: false,
+            open_help: None,
             output_side: false,
             graph: plots::Kind::Spectrum,
             analysis_queue: VecDeque::new(),
@@ -857,6 +861,13 @@ impl App {
             Message::ToggleLimiterDetails => {
                 self.show_limiter_details = !self.show_limiter_details;
             }
+            Message::ToggleHelp(topic) => {
+                self.open_help = if self.open_help == Some(topic) {
+                    None
+                } else {
+                    Some(topic)
+                };
+            }
             Message::ToggleOptimization => {
                 self.show_optimization = !self.show_optimization;
             }
@@ -1366,17 +1377,6 @@ impl App {
     }
 }
 
-fn field<'a>(label: &'static str, value: &'a str, field: Field) -> Element<'a, Message> {
-    column![
-        text(label).size(12),
-        text_input(label, value)
-            .on_input(move |v| Message::Edit(field, v))
-            .padding(5)
-    ]
-    .spacing(3)
-    .width(Fill)
-    .into()
-}
 fn clock(seconds: f64) -> String {
     let seconds = seconds.max(0.) as u64;
     format!("{}:{:02}", seconds / 60, seconds % 60)

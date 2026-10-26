@@ -1,4 +1,5 @@
 use super::*;
+use crate::descriptions::Topic;
 use iced::widget::{column, responsive};
 
 const SETTINGS_WIDTH: f32 = 330.;
@@ -727,24 +728,34 @@ impl App {
         };
         let loudness = column![
             text("Loudness").size(14),
-            pick_list(
-                ReferenceMode::ALL,
-                Some(self.library.draft.reference_mode),
-                Message::ReferenceMode
-            )
-            .width(Fill),
+            self.explained(
+                "Level measurement",
+                Topic::ReferenceMode,
+                (pick_list(
+                    ReferenceMode::ALL,
+                    Some(self.library.draft.reference_mode),
+                    Message::ReferenceMode
+                )
+                .width(Fill))
+                .into()
+            ),
             self.numeric(target_label, Field::Loudness),
         ]
         .spacing(7)
         .width(Fill);
         let peak = column![
             text("Peak").size(14),
-            pick_list(
-                CeilingMode::ALL,
-                Some(self.library.draft.ceiling_mode),
-                Message::CeilingMode
-            )
-            .width(Fill),
+            self.explained(
+                "Peak measurement",
+                Topic::CeilingMode,
+                (pick_list(
+                    CeilingMode::ALL,
+                    Some(self.library.draft.ceiling_mode),
+                    Message::CeilingMode
+                )
+                .width(Fill))
+                .into()
+            ),
             self.numeric("Ceiling (dBFS)", Field::Ceiling),
             self.numeric("Lowpass true-peak frequency (Hz)", Field::LowpassCut),
         ]
@@ -773,17 +784,25 @@ impl App {
         if self.show_limiter_details {
             settings = settings.push(
                 column![
-                    checkbox(self.library.draft.preserve_bass)
-                        .label("Preserve bass")
-                        .on_toggle(Message::PreserveBass),
+                    self.explained_toggle(
+                        Topic::PreserveBass,
+                        (checkbox(self.library.draft.preserve_bass)
+                            .label("Preserve bass")
+                            .on_toggle(Message::PreserveBass))
+                        .into()
+                    ),
                     self.numeric_choice("Oversampling", Field::Oversample, &model::OVERSAMPLING),
-                    text("Noise update").size(12),
-                    pick_list(
-                        NoiseMode::ALL,
-                        Some(self.library.draft.noise_mode),
-                        Message::NoiseMode
-                    )
-                    .width(Fill),
+                    self.explained(
+                        "Noise update",
+                        Topic::NoiseMode,
+                        (pick_list(
+                            NoiseMode::ALL,
+                            Some(self.library.draft.noise_mode),
+                            Message::NoiseMode
+                        )
+                        .width(Fill))
+                        .into()
+                    ),
                     row![
                         self.numeric("Outer iterations", Field::MaxIter1),
                         self.numeric("Inner iterations", Field::MaxIter2)
@@ -791,9 +810,13 @@ impl App {
                     .spacing(8),
                     rule::horizontal(1),
                     text("Pre-compression").size(14),
-                    checkbox(self.library.draft.pre_compression)
-                        .label("Pre-compression enabled")
-                        .on_toggle(Message::PreCompression),
+                    self.explained_toggle(
+                        Topic::PreCompression,
+                        (checkbox(self.library.draft.pre_compression)
+                            .label("Pre-compression enabled")
+                            .on_toggle(Message::PreCompression))
+                        .into()
+                    ),
                 ]
                 .spacing(7),
             );
@@ -802,12 +825,16 @@ impl App {
             .push(rule::horizontal(1))
             .push(text("Automatic mastering").size(15))
             .push(
-                checkbox(self.library.draft.mastering)
-                    .label("Automatic mastering enabled")
-                    .on_toggle(Message::Mastering),
+                self.explained_toggle(
+                    Topic::Mastering,
+                    (checkbox(self.library.draft.mastering)
+                        .label("Automatic mastering enabled")
+                        .on_toggle(Message::Mastering))
+                    .into(),
+                ),
             )
             .push(self.intensity_control())
-            .push(text("Reference").size(14))
+            .push(self.help_label("Reference", Topic::Field(Field::Reference)))
             .push(
                 checkbox(
                     self.library.draft.use_reference || !self.library.draft.reference.is_empty(),
@@ -820,7 +847,7 @@ impl App {
                         .then_some(Message::ReferenceEnabled),
                 ),
             )
-            .push(self.reference_control())
+            .push(self.help_body(Topic::Field(Field::Reference), self.reference_control()))
             .push(
                 button(if self.show_optimization {
                     "▾ Optimization"
@@ -834,11 +861,15 @@ impl App {
         if self.show_optimization {
             settings = settings.push(
                 column![
-                    controls::choice(
-                        Solver::ALL.to_vec(),
-                        Some(self.library.draft.solver),
-                        Message::Solver,
-                        self.library.draft.mastering
+                    self.explained(
+                        "Optimizer",
+                        Topic::Solver,
+                        controls::choice(
+                            Solver::ALL.to_vec(),
+                            Some(self.library.draft.solver),
+                            Message::Solver,
+                            self.library.draft.mastering
+                        )
                     ),
                     row![
                         self.numeric("Evaluations", Field::Evaluations),
@@ -862,12 +893,17 @@ impl App {
             .push(rule::horizontal(1))
             .push(text("Output").size(15))
             .push(
-                pick_list(
-                    Format::ALL,
-                    Some(self.library.draft.format),
-                    Message::Format,
-                )
-                .width(Fill),
+                self.explained(
+                    "File format",
+                    Topic::Format,
+                    (pick_list(
+                        Format::ALL,
+                        Some(self.library.draft.format),
+                        Message::Format,
+                    )
+                    .width(Fill))
+                    .into(),
+                ),
             )
             .push(
                 row![
@@ -891,21 +927,21 @@ impl App {
             text("Engine & resources").size(14),
             text("Blank: bundled with this app. Non-empty: use the specified path.").size(12),
             button("Clear paths / use bundled tools").on_press(Message::UseBundledTools).style(theme::normal),
-            path_setting(
+            self.path_setting(
                 "phase_limiter executable",
                 &self.library.app_settings.backend,
                 Field::Backend
             ),
-            path_setting(
+            self.path_setting(
                 "FFmpeg executable / PATH name",
                 &self.library.app_settings.ffmpeg,
                 Field::Ffmpeg
             ),
-            path_setting("sound_quality2_cache", &self.library.app_settings.cache, Field::Cache),
+            self.path_setting("sound_quality2_cache", &self.library.app_settings.cache, Field::Cache),
             text("Professionality uses audio_detector beside phase_limiter and resource/detection_preparation.json with its analysis_data corpus.")
                 .size(12),
             rule::horizontal(1),
-            path_setting("Default export directory", &self.library.app_settings.export_dir, Field::ExportDir),
+            self.path_setting("Default export directory", &self.library.app_settings.export_dir, Field::ExportDir),
             rule::horizontal(1),
             text(format!(
                 "Library: {:.1} MiB",
@@ -985,14 +1021,27 @@ fn config_summary(c: &model::Config) -> String {
     )
 }
 
-fn path_setting<'a>(label: &'static str, value: &'a str, setting: Field) -> Element<'a, Message> {
-    row![
-        field(label, value, setting),
-        button("Browse…")
-            .on_press(Message::BrowseSettingPath(setting))
-            .style(theme::normal),
-    ]
-    .spacing(8)
-    .align_y(iced::Bottom)
-    .into()
+impl App {
+    fn path_setting<'a>(
+        &'a self,
+        label: &'static str,
+        value: &'a str,
+        setting: Field,
+    ) -> Element<'a, Message> {
+        self.explained(
+            label,
+            Topic::Field(setting),
+            row![
+                text_input(label, value)
+                    .on_input(move |value| Message::Edit(setting, value))
+                    .padding(5),
+                button("Browse…")
+                    .on_press(Message::BrowseSettingPath(setting))
+                    .style(theme::normal),
+            ]
+            .spacing(8)
+            .align_y(iced::Bottom)
+            .into(),
+        )
+    }
 }

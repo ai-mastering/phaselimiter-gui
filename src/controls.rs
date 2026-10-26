@@ -245,11 +245,7 @@ impl App {
         ]
         .spacing(1);
         let mut content = column![
-            text(label).size(12).color(if enabled {
-                theme::LABEL
-            } else {
-                theme::DISABLED_LABEL
-            }),
+            self.help_label(label, crate::descriptions::Topic::Field(field)),
             row![input, arrows].spacing(3)
         ]
         .spacing(3)
@@ -281,7 +277,11 @@ impl App {
                 .color(theme::DISABLED_LABEL),
             );
         }
-        group(content.into(), field, invalid)
+        group(
+            self.help_body(crate::descriptions::Topic::Field(field), content.into()),
+            field,
+            invalid,
+        )
     }
     pub(super) fn numeric_choice(
         &self,
@@ -297,11 +297,7 @@ impl App {
             .filter(|v| options.contains(v));
         let invalid = enabled && selected.is_none();
         let mut col = column![
-            text(label).size(12).color(if enabled {
-                theme::LABEL
-            } else {
-                theme::DISABLED_LABEL
-            }),
+            self.help_label(label, crate::descriptions::Topic::Field(field)),
             choice(
                 options.to_vec(),
                 selected,
@@ -318,7 +314,11 @@ impl App {
                     .color(theme::ERROR),
             );
         }
-        group(col.into(), field, invalid)
+        group(
+            self.help_body(crate::descriptions::Topic::Field(field), col.into()),
+            field,
+            invalid,
+        )
     }
     pub(super) fn intensity_control(&self) -> Element<'_, Message> {
         let enabled = self.library.draft.mastering;
@@ -348,11 +348,10 @@ impl App {
             && !spec(Field::Intensity, &self.library.draft)
                 .is_some_and(|n| n.valid(&self.library.draft.intensity));
         let mut content = column![
-            text("Intensity (0–1)").size(12).color(if enabled {
-                theme::LABEL
-            } else {
-                theme::DISABLED_LABEL
-            }),
+            self.help_label(
+                "Intensity (0–1)",
+                crate::descriptions::Topic::Field(Field::Intensity)
+            ),
             row![
                 bar,
                 text(format!("{value:.2}")).width(42).color(if enabled {
@@ -368,7 +367,14 @@ impl App {
         if invalid {
             content = content.push(text("Use 0.00–1.00.").size(11).color(theme::ERROR));
         }
-        group(content.into(), Field::Intensity, invalid)
+        group(
+            self.help_body(
+                crate::descriptions::Topic::Field(Field::Intensity),
+                content.into(),
+            ),
+            Field::Intensity,
+            invalid,
+        )
     }
 }
 
