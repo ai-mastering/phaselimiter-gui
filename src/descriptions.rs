@@ -27,6 +27,7 @@ use iced::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Topic {
+    Measurement(crate::measurements::Help),
     Field(Field),
     ReferenceMode,
     CeilingMode,
@@ -64,6 +65,7 @@ impl App {
 
     pub(super) fn previous_setting(&self, topic: Topic) -> Option<String> {
         let label = match topic {
+            Topic::Measurement(_) => return None,
             Topic::ReferenceMode => "Volume reference",
             Topic::CeilingMode => "Peak control",
             Topic::NoiseMode => "Noise update",
@@ -121,7 +123,7 @@ impl App {
             })
     }
 
-    fn help_button(&self, topic: Topic) -> Element<'_, Message> {
+    pub(super) fn help_button(&self, topic: Topic) -> Element<'_, Message> {
         let selected = self.open_help == Some(topic);
         button(
             text("i")
@@ -230,6 +232,7 @@ impl App {
     pub(super) fn description(&self, topic: Topic) -> String {
         let s = &self.library.draft;
         let body = match topic {
+            Topic::Measurement(help) => help.description(),
             Topic::Field(field) => match field {
                 Field::Loudness => {
                     "Sets the gain target for the selected level measurement before phase limiting. The final measured level can differ after limiting and encoding."

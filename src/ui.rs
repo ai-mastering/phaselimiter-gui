@@ -6,6 +6,24 @@ const SETTINGS_WIDTH: f32 = 330.;
 const HISTORY_WIDTH: f32 = 300.;
 
 impl App {
+    fn measurement_label(
+        &self,
+        label: &'static str,
+        help: measurements::Help,
+    ) -> Element<'_, Message> {
+        row![
+            text(label)
+                .size(theme::SMALL_TEXT)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                .width(Fill),
+            self.help_button(Topic::Measurement(help)),
+        ]
+        .spacing(theme::ITEM_GAP)
+        .align_y(iced::Center)
+        .width(172)
+        .into()
+    }
+
     pub(super) fn view(&self) -> Element<'_, Message> {
         // Only menu popup placement needs the viewport dimensions.
         let content: Element<'_, Message> =
@@ -461,10 +479,7 @@ impl App {
         let mut table = column![heading, rule::horizontal(1)].spacing(theme::ITEM_GAP);
         for metric in measurements::ALL {
             let mut values = row![
-                text(metric.label)
-                    .size(theme::SMALL_TEXT)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                    .width(172),
+                self.measurement_label(metric.label, metric.help),
                 numeric_cell(metric.format(track.analysis.as_ref()), numeric_width)
             ]
             .spacing(theme::SECTION_GAP);
@@ -483,14 +498,11 @@ impl App {
             if has_reference {
                 values = values.push(numeric_cell(metric.format(reference), numeric_width));
             }
-            table = table.push(values);
+            table = table.push(self.help_body(Topic::Measurement(metric.help), values.into()));
         }
         if let Some(job) = job {
             let mut values = row![
-                text("Limiting error")
-                    .size(theme::SMALL_TEXT)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                    .width(172),
+                self.measurement_label("Limiting error", measurements::Help::LimitingError),
                 numeric_cell("—".into(), numeric_width)
             ]
             .spacing(theme::SECTION_GAP);
@@ -504,7 +516,10 @@ impl App {
             if has_reference {
                 values = values.push(numeric_cell("—".into(), numeric_width));
             }
-            table = table.push(values);
+            table = table.push(self.help_body(
+                Topic::Measurement(measurements::Help::LimitingError),
+                values.into(),
+            ));
         }
         detail = detail.push(
             scrollable(table)
@@ -1223,5 +1238,48 @@ mod long_name_tests {
         );
         assert_eq!(abbreviate("long", 0., true, measure), "");
         assert_eq!(abbreviate("long", 1., true, measure), "…");
+    }
+}
+
+#[cfg(test)]
+mod measurement_help_tests {
+    use super::*;
+
+    #[test]
+    fn every_measurement_help_opens_and_closes_without_editing_settings() {
+        let mut app = App::default();
+        let before = serde_json::to_value(&app.library.draft).unwrap();
+        for (label, help) in measurements::ALL
+            .iter()
+            .map(|metric| (metric.label, metric.help))
+            .chain([("Limiting error", measurements::Help::LimitingError)])
+        {
+            let topic = Topic::Measurement(help);
+            let mut ui =
+                iced_test::simulator(app.help_body(topic, app.measurement_label(label, help)));
+            assert!(ui.find(help.description()).is_err());
+            ui.click("i").unwrap();
+            let messages: Vec<_> = ui.into_messages().collect();
+            assert_eq!(messages.len(), 1);
+            for message in messages {
+                let _ = app.update(message);
+            }
+            assert_eq!(app.open_help, Some(topic));
+            assert!(app.previous_setting(topic).is_none());
+            let mut ui =
+                iced_test::simulator(app.help_body(topic, app.measurement_label(label, help)));
+            assert!(
+                ui.find(help.description())
+                    .unwrap()
+                    .visible_bounds()
+                    .is_some()
+            );
+            ui.click("i").unwrap();
+            for message in ui.into_messages() {
+                let _ = app.update(message);
+            }
+            assert_eq!(app.open_help, None);
+        }
+        assert_eq!(serde_json::to_value(&app.library.draft).unwrap(), before);
     }
 }
