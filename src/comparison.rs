@@ -2,17 +2,16 @@
 use crate::{App, Job, Message, Settings, Status, analysis, model};
 use iced::Task;
 use std::path::PathBuf;
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ComparisonChoice {
-    pub job: Option<usize>,
+    pub job: Option<Uuid>,
+    pub label: String,
 }
 impl std::fmt::Display for ComparisonChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.job {
-            Some(id) => write!(f, "Master #{id}"),
-            None => f.write_str("Original"),
-        }
+        f.write_str(&self.label)
     }
 }
 impl App {
@@ -27,7 +26,10 @@ impl App {
         })
     }
     pub(super) fn comparison_choices(&self) -> Vec<ComparisonChoice> {
-        let mut choices = vec![ComparisonChoice { job: None }];
+        let mut choices = vec![ComparisonChoice {
+            job: None,
+            label: "Original".into(),
+        }];
         if let Some((track, selected)) = self.selected {
             choices.extend(
                 self.library
@@ -38,14 +40,17 @@ impl App {
                             && j.status == Status::Succeeded
                             && Some(j.id) != selected
                     })
-                    .map(|j| ComparisonChoice { job: Some(j.id) }),
+                    .map(|j| ComparisonChoice {
+                        job: Some(j.id),
+                        label: self.library.job_label(j),
+                    }),
             );
         }
         choices
     }
     pub(super) fn comparison_label(&self) -> String {
         self.comparison_job()
-            .map_or_else(|| "Original".into(), |j| format!("Master #{}", j.id))
+            .map_or_else(|| "Original".into(), |j| self.library.job_label(j))
     }
     pub(super) fn comparison_analysis(&self) -> Option<&analysis::Analysis> {
         if let Some(job) = self.comparison_job() {

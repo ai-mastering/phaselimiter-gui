@@ -4,13 +4,14 @@ use crate::analysis::Analysis;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub(super) struct SavedJob {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
-    track_id: usize,
+    track_id: Uuid,
     #[serde(default)]
     output_hash: Option<String>,
     #[serde(default)]
@@ -25,7 +26,11 @@ pub(super) struct SavedJob {
     limiting_error: Option<f64>,
     #[serde(default)]
     tools: Option<ExecutionTools>,
-    id: usize,
+    #[serde(default)]
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    memo: String,
+    id: Uuid,
     input: PathBuf,
     output: PathBuf,
     config: Value,
@@ -45,6 +50,8 @@ impl TryFrom<SavedJob> for Job {
         let config: Config = serde_json::from_value(saved.config).map_err(|e| e.to_string())?;
         Ok(Self {
             id: saved.id,
+            created_at: saved.created_at,
+            memo: saved.memo,
             track_id: saved.track_id,
             input: saved.input,
             output: saved.output,

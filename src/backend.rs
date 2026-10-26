@@ -262,7 +262,7 @@ mod tests {
     fn passes_processing_choices_and_one_shared_mastering_level() {
         let dir = tempfile::tempdir().unwrap();
         let settings = crate::model::Settings {
-            mastering: false,
+            mastering: true,
             intensity: "0.3".into(),
             noise_mode: crate::model::NoiseMode::Adaptive,
             reference_mode: crate::model::ReferenceMode::Rms,
@@ -278,7 +278,7 @@ mod tests {
         );
         let args = arguments(&job);
         for (flag, expected) in [
-            ("mastering", "false"),
+            ("mastering", "true"),
             ("mastering_matching_level", "0.3"),
             ("mastering_ms_matching_level", "0.3"),
             ("mastering5_mastering_level", "0.3"),

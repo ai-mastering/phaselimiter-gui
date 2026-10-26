@@ -1,3 +1,4 @@
+use uuid::Uuid;
 mod storage;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -325,6 +326,16 @@ pub struct Config {
     pub solver: Solver,
 }
 
+pub const OVERSAMPLING: [u32; 5] = [1, 2, 4, 8, 16];
+// Music-production rates (Logic Pro project/file formats). Encoders further limit them.
+pub fn sample_rates(format: Format) -> &'static [u32] {
+    match format {
+        Format::Wav => &[44100, 48000, 88200, 96000, 176400, 192000],
+        Format::Mp3 => &[44100, 48000],
+        Format::Aac => &[44100, 48000, 88200, 96000],
+    }
+}
+
 impl Settings {
     pub fn parse(&self) -> Result<Config, String> {
         fn number(s: &str, label: &str, min: f64, max: f64) -> Result<f64, String> {
@@ -343,41 +354,76 @@ impl Settings {
                 .map_err(|_| format!("{label}: enter a non-negative integer."))
         }
         let sample_rate = integer(&self.sample_rate, "Sample rate")?;
-        if !(8000..=192000).contains(&sample_rate) {
-            return Err("Sample rate: use 8000 to 192000 Hz.".into());
+        if !sample_rates(self.format).contains(&sample_rate) {
+            return Err("Sample rate: choose a supported rate for the output format.".into());
         }
-        let bit_depth = integer(&self.bit_depth, "Bit depth")?;
+        let bit_depth = if self.format == Format::Wav {
+            integer(&self.bit_depth, "Bit depth")?
+        } else {
+            16
+        };
         if ![16, 24, 32].contains(&bit_depth) {
             return Err("WAV bit depth: use 16, 24 or 32 (float).".into());
         }
-        let evaluations = integer(&self.evaluations, "Evaluation budget")?;
-        if evaluations == 0 {
-            return Err("Evaluation budget must be positive.".into());
+        let evaluations = if self.mastering {
+            integer(&self.evaluations, "Evaluation budget")?
+        } else {
+            400
+        };
+        if evaluations == 0 || evaluations > i32::MAX as u32 {
+            return Err("Evaluation budget: use 1 to 2147483647.".into());
         }
         let config = Config {
             noise_mode: self.noise_mode,
             max_iter2: integer(&self.max_iter2, "max_iter2")?,
             max_iter1: integer(&self.max_iter1, "max_iter1")?,
             oversample: integer(&self.oversample, "oversample")?,
-            lowpass_cut: number(&self.lowpass_cut, "lowpass_cut", 0.0, 22050.0)?,
+            lowpass_cut: if self.ceiling_mode == CeilingMode::LowpassTruePeak {
+                number(
+                    &self.lowpass_cut,
+                    "Lowpass true-peak frequency",
+                    0.0,
+                    22050.0,
+                )?
+            } else {
+                15000.0
+            },
             ceiling_mode: self.ceiling_mode,
             reference_mode: self.reference_mode,
             high_cut: number(&self.high_cut, "high_cut", 0.0, 22050.0)?,
             low_cut: number(&self.low_cut, "low_cut", 0.0, 22050.0)?,
             mastering: self.mastering,
-            reference: (!self.reference.is_empty()).then(|| PathBuf::from(&self.reference)),
-            loudness: number(&self.loudness, "Target loudness", -60.0, 0.0)?,
-            intensity: number(&self.intensity, "Mastering intensity", 0.0, 1.0)?,
-            ceiling: number(&self.ceiling, "True-peak ceiling", -20.0, 0.0)?,
+            reference: (self.mastering && !self.reference.is_empty())
+                .then(|| PathBuf::from(&self.reference)),
+            loudness: if self.reference_mode != ReferenceMode::Zero {
+                number(&self.loudness, "Target level", -60.0, 0.0)?
+            } else {
+                0.0
+            },
+            intensity: if self.mastering {
+                number(&self.intensity, "Intensity", 0.0, 1.0)?
+            } else {
+                1.0
+            },
+            ceiling: number(&self.ceiling, "Ceiling", -20.0, 0.0)?,
             sample_rate,
             bit_depth,
-            workers: integer(&self.workers, "Workers")?,
+            workers: {
+                let v = integer(&self.workers, "Workers")?;
+                if v > i32::MAX as u32 {
+                    return Err("Workers: exceeds backend integer range.".into());
+                }
+                v
+            },
             evaluations,
-            seed: self
-                .seed
-                .trim()
-                .parse()
-                .map_err(|_| "Seed: enter a non-negative 64-bit integer.".to_owned())?,
+            seed: if self.mastering {
+                self.seed
+                    .trim()
+                    .parse()
+                    .map_err(|_| "Seed: enter a non-negative 64-bit integer.".to_owned())?
+            } else {
+                1
+            },
             preserve_bass: self.preserve_bass,
             pre_compression: self.pre_compression,
             format: self.format,
@@ -400,11 +446,8 @@ impl Settings {
                     .into(),
             );
         }
-        if !config.oversample.is_power_of_two() || config.oversample > (i32::MAX as u32 / 44100) {
-            return Err(
-                "Oversampling: use a power of 2 (1, 2, 4, 8, …) within the DSP sample-rate limit."
-                    .into(),
-            );
+        if !OVERSAMPLING.contains(&config.oversample) {
+            return Err("Oversampling: choose 1, 2, 4, 8 or 16.".into());
         }
         if config.max_iter1 > i32::MAX as u32 || config.max_iter2 > i32::MAX as u32 {
             return Err("Iteration limits exceed the backend integer range.".into());
@@ -446,7 +489,7 @@ pub struct Job {
     #[serde(default)]
     pub command: Option<String>,
     #[serde(default)]
-    pub track_id: usize,
+    pub track_id: Uuid,
     #[serde(default)]
     pub output_hash: Option<String>,
     #[serde(default)]
@@ -459,7 +502,9 @@ pub struct Job {
     pub analysis_error: Option<String>,
     #[serde(default)]
     pub limiting_error: Option<f64>,
-    pub id: usize,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub memo: String,
+    pub id: Uuid,
     pub input: PathBuf,
     pub output: PathBuf,
     pub config: Config,
@@ -472,8 +517,10 @@ pub struct Job {
 #[cfg(test)]
 pub fn test_job(input: PathBuf, output: PathBuf, config: Config, id: usize) -> Job {
     Job {
-        id,
-        track_id: 0,
+        id: Uuid::from_u128(id as u128),
+        created_at: None,
+        memo: String::new(),
+        track_id: Uuid::nil(),
         input,
         output,
         config,
@@ -534,6 +581,67 @@ fn default_noise_mode() -> NoiseMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inactive_fields_are_not_parsed_or_forwarded() {
+        let mut s = Settings {
+            format: Format::Mp3,
+            mastering: false,
+            reference_mode: ReferenceMode::Zero,
+            ceiling_mode: CeilingMode::Peak,
+            bit_depth: "banana".into(),
+            intensity: "NaN".into(),
+            evaluations: "-1".into(),
+            seed: "overflow".into(),
+            lowpass_cut: "invalid".into(),
+            loudness: "invalid".into(),
+            reference: "missing.json".into(),
+            ..Settings::default()
+        };
+        let config = s.parse().unwrap();
+        assert_eq!(config.bit_depth, 16);
+        assert_eq!(config.intensity, 1.);
+        assert!(config.reference.is_none());
+        assert_eq!(config.loudness, 0.);
+        assert!(config.lowpass_cut.is_finite());
+        s.format = Format::Wav;
+        assert!(s.parse().is_err());
+        s.format = Format::Mp3;
+        s.mastering = true;
+        assert!(s.parse().is_err());
+        s.mastering = false;
+        s.ceiling_mode = CeilingMode::LowpassTruePeak;
+        assert!(s.parse().is_err());
+        s.ceiling_mode = CeilingMode::Peak;
+        s.reference_mode = ReferenceMode::Loudness;
+        assert!(s.parse().is_err());
+    }
+    #[test]
+    fn selections_and_backend_unsigned_ranges_are_enforced() {
+        let mut s = Settings {
+            seed: u64::MAX.to_string(),
+            ..Settings::default()
+        };
+        assert_eq!(s.parse().unwrap().seed, u64::MAX);
+        s.evaluations = (i32::MAX as u64 + 1).to_string();
+        assert!(s.parse().is_err());
+        s.evaluations = "100".into();
+        s.workers = (i32::MAX as u64 + 1).to_string();
+        assert!(s.parse().is_err());
+        s.workers = "0".into();
+        s.oversample = "32".into();
+        assert!(s.parse().is_err());
+        s.oversample = "16".into();
+        for format in Format::ALL {
+            s.format = format;
+            for rate in sample_rates(format) {
+                s.sample_rate = rate.to_string();
+                assert!(s.parse().is_ok());
+            }
+        }
+        s.format = Format::Mp3;
+        s.sample_rate = "96000".into();
+        assert!(s.parse().is_err());
+    }
     #[test]
     fn validates_filter_and_limiter_contracts() {
         let mut settings = Settings {

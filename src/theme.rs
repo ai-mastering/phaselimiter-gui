@@ -18,6 +18,8 @@ const EDGE: Color = iced::color!(0x7F8C9D);
 const BLUE: Color = iced::color!(0x245DAD);
 const MUTED: Color = iced::color!(0x68685F);
 const DISABLED: Color = iced::color!(0xE2E0D5);
+pub const LABEL: Color = INK;
+pub const DISABLED_LABEL: Color = MUTED;
 pub const ERROR: Color = iced::color!(0xA52D28);
 
 impl iced::theme::Base for Theme {
@@ -106,6 +108,29 @@ fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
         value: if disabled { MUTED } else { INK },
         selection: iced::color!(0xA9CDF7),
     }
+}
+
+pub fn invalid_group(_: &Theme) -> container::Style {
+    container::Style {
+        border: border(ERROR, 1.0),
+        ..container::Style::default()
+    }
+}
+pub fn numeric_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    input(theme, status)
+}
+pub fn invalid_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        border: border(ERROR, 2.0),
+        ..input(theme, status)
+    }
+}
+pub fn disabled_slider(theme: &Theme, status: slider::Status) -> slider::Style {
+    let mut style = seek(theme, status);
+    style.rail.backgrounds = (MUTED.into(), DISABLED.into());
+    style.handle.background = DISABLED.into();
+    style.handle.border_color = MUTED;
+    style
 }
 
 fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style {

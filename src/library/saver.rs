@@ -95,21 +95,25 @@ impl Drop for SaveWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
     #[test]
     fn flush_preserves_the_latest_selection_and_settings() {
         let dir = tempfile::tempdir().unwrap();
         let saver = SaveWorker::new(dir.path().to_path_buf()).unwrap();
         let mut state = Library {
-            selected: Some((1, None)),
+            selected: Some((Uuid::from_u128(1), None)),
             ..Library::default()
         };
         saver.save(state.clone()).unwrap();
-        state.selected = Some((2, Some(3)));
+        state.selected = Some((Uuid::from_u128(2), Some(Uuid::from_u128(3))));
         state.draft.loudness = "-12".into();
         saver.save(state).unwrap();
         saver.flush().unwrap();
         let saved = Library::load(dir.path()).unwrap();
-        assert_eq!(saved.selected, Some((2, Some(3))));
+        assert_eq!(
+            saved.selected,
+            Some((Uuid::from_u128(2), Some(Uuid::from_u128(3))))
+        );
         assert_eq!(saved.draft.loudness, "-12");
     }
     #[test]

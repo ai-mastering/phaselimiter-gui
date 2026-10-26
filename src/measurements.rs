@@ -42,7 +42,7 @@ macro_rules! metric {
 pub const ALL: &[Metric] = &[
     metric!("Loudness", "loudness", " LUFS", 1, 1.),
     metric!("Loudness range", "loudness_range", " LU", 1, 1.),
-    metric!("True peak", "true_peak", " dBTP", 1, 1.),
+    metric!("True peak", "true_peak", " dBFS", 1, 1.),
     metric!("Professionality", "sound_quality", " %", 0, 100.),
     metric!("Professionality2", "sound_quality2", " %", 0, 100.),
     metric!("Peak", "peak", " dBFS", 1, 1.),
@@ -50,7 +50,7 @@ pub const ALL: &[Metric] = &[
     metric!(
         "True peak / LP 15 kHz",
         "lowpass_true_peak_15khz",
-        " dBTP",
+        " dBFS",
         1,
         1.
     ),
@@ -73,6 +73,18 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn peak_measurements_use_full_scale_units_without_changing_values() {
+        let a = Analysis::new(json!({"peak":-1.2,"true_peak":-0.8,"lowpass_true_peak_15khz":-0.5}));
+        for (key, expected) in [
+            ("peak", "-1.2 dBFS"),
+            ("true_peak", "-0.8 dBFS"),
+            ("lowpass_true_peak_15khz", "-0.5 dBFS"),
+        ] {
+            let m = ALL.iter().find(|m| m.key == key).unwrap();
+            assert_eq!(m.format(Some(&a)), expected);
+        }
+    }
     #[test]
     fn scores_are_percentages_and_absent_values_are_not_zero() {
         let a = Analysis::new(json!({"sound_quality":0.72,"sound_quality2":0.815}));

@@ -63,7 +63,12 @@ impl App {
         if let Some(track) = self.track() {
             let mut title = row![
                 text(if let Some(job) = self.job() {
-                    format!("{} / Master #{} · {}", track.name, job.id, job.status)
+                    format!(
+                        "{} / {} · {}",
+                        track.name,
+                        self.library.job_label(job),
+                        job.status
+                    )
                 } else {
                     track.name.clone()
                 })
@@ -153,7 +158,7 @@ impl App {
         for track in self.library.tracks.iter().rev() {
             let key = (track.id, None);
             let mut entries = column![
-                text(format!("{}  · #{}", track.name, track.id)).size(14),
+                text(&track.name).size(14),
                 button("Original")
                     .on_press(Message::Select(key))
                     .width(Fill)
@@ -171,26 +176,21 @@ impl App {
                 .iter()
                 .filter(|j| j.track_id == track.id)
                 .collect();
-            for (index, job) in jobs.into_iter().enumerate().rev() {
+            for job in jobs.into_iter().rev() {
                 let key = (track.id, Some(job.id));
                 let unit = match job.config.reference_mode {
                     ReferenceMode::Loudness | ReferenceMode::YoutubeLoudness => "LUFS",
                     _ => "dB",
                 };
-                let label = format!(
-                    "Master {} · {} {} · {}",
-                    index + 1,
-                    job.config.loudness,
-                    unit,
-                    job.status
-                );
+                let label = self.library.job_label(job);
                 entries = entries.push(
                     button(
                         column![
                             text(label).size(12),
+                            text(format!("{} {} · {}", job.config.loudness, unit, job.status))
+                                .size(11),
                             text(format!(
-                                "#{}  ·  peak {}  ·  {}",
-                                job.id,
+                                "peak {}  ·  {}",
                                 job.config.ceiling,
                                 if job.config.mastering {
                                     format!("intensity {}", job.config.intensity)
@@ -264,7 +264,7 @@ impl App {
                         .on_press(Message::Side(false)),
                 )
                 .push(
-                    button(text(format!("B: Master #{}", job.id)).size(13))
+                    button(text(format!("B: {}", self.library.job_label(job))).size(13))
                         .style(if self.output_side {
                             theme::selected
                         } else {
@@ -359,19 +359,43 @@ impl App {
         let mut detail = column![].spacing(7);
         if let Some(job) = job {
             detail = detail.push(
+                text_input("Memo (optional, saved automatically)", &job.memo)
+                    .on_input(move |memo| Message::EditMemo(job.id, memo))
+                    .on_submit(Message::SaveMemo),
+            );
+            detail = detail.push(
+                text(job.created_at.map_or_else(
+                    || "Created: unknown (imported history)".into(),
+                    |created| {
+                        format!(
+                            "Created: {}",
+                            created
+                                .with_timezone(&chrono::Local)
+                                .format("%Y/%m/%d %H:%M:%S%.9f %:z")
+                        )
+                    },
+                ))
+                .size(11),
+            );
+            let choices = self.comparison_choices();
+            let selected = choices
+                .iter()
+                .find(|choice| choice.job == baseline.map(|j| j.id))
+                .cloned();
+            detail = detail.push(
                 row![
                     text("Compare A").size(12),
-                    pick_list(
-                        self.comparison_choices(),
-                        Some(ComparisonChoice {
-                            job: baseline.map(|j| j.id)
-                        }),
-                        Message::Compare
-                    ),
-                    button(text(format!("Load settings from Master #{}", job.id)).size(12))
-                        .on_press(Message::UseSettings(job.id))
-                        .padding(3)
-                        .style(theme::normal),
+                    pick_list(choices, selected, Message::Compare),
+                    button(
+                        text(format!(
+                            "Load settings from {}",
+                            self.library.job_label(job)
+                        ))
+                        .size(12)
+                    )
+                    .on_press(Message::UseSettings(job.id))
+                    .padding(3)
+                    .style(theme::normal),
                 ]
                 .spacing(8)
                 .align_y(iced::Center),
@@ -385,14 +409,14 @@ impl App {
         .spacing(6);
         if let Some(baseline) = baseline {
             heading = heading.push(
-                text(format!("A: #{}", baseline.id))
+                text(format!("A: {}", self.library.job_label(baseline)))
                     .size(12)
                     .width(numeric_width),
             );
         }
         if let Some(job) = job {
             heading = heading.push(
-                text(format!("B: #{}", job.id))
+                text(format!("B: {}", self.library.job_label(job)))
                     .size(12)
                     .width(numeric_width),
             );
@@ -689,6 +713,7 @@ impl App {
         let mut panel = column![
             heading,
             scrollable(self.mastering_settings_view(wide_form))
+                .id("mastering-fields")
                 .spacing(4)
                 .height(Fill)
                 .width(Fill),
@@ -731,18 +756,28 @@ impl App {
         }
         column![
             rule::horizontal(1),
-            text(format!("Changes from Master #{}", job.id)).size(13),
+            text(format!("Changes from {}", self.library.job_label(job))).size(13),
             scrollable(changes).spacing(4).height(height),
-            button(text(format!("Load settings from Master #{}", job.id)).size(12))
-                .on_press(Message::UseSettings(job.id))
-                .padding(4)
-                .style(theme::normal),
+            button(
+                text(format!(
+                    "Load settings from {}",
+                    self.library.job_label(job)
+                ))
+                .size(12)
+            )
+            .on_press(Message::UseSettings(job.id))
+            .padding(4)
+            .style(theme::normal),
         ]
         .spacing(4)
         .into()
     }
 
     fn mastering_settings_view(&self, wide_form: bool) -> Element<'_, Message> {
+        let target_label = match self.library.draft.reference_mode {
+            ReferenceMode::Loudness | ReferenceMode::YoutubeLoudness => "Target level (LUFS)",
+            _ => "Target level (dBFS)",
+        };
         let loudness = column![
             text("Loudness").size(14),
             pick_list(
@@ -751,15 +786,11 @@ impl App {
                 Message::ReferenceMode
             )
             .width(Fill),
-            field(
-                "Target level (LUFS / dB)",
-                &self.library.draft.loudness,
-                Field::Loudness
-            ),
+            self.numeric(target_label, Field::Loudness),
         ]
         .spacing(7)
         .width(Fill);
-        let mut peak = column![
+        let peak = column![
             text("Peak").size(14),
             pick_list(
                 CeilingMode::ALL,
@@ -767,18 +798,12 @@ impl App {
                 Message::CeilingMode
             )
             .width(Fill),
-            field("Ceiling (dB)", &self.library.draft.ceiling, Field::Ceiling),
+            self.numeric("Ceiling (dBFS)", Field::Ceiling),
+            self.numeric("Lowpass true-peak frequency (Hz)", Field::LowpassCut),
         ]
         .spacing(7)
         .width(Fill);
-        if self.library.draft.ceiling_mode == CeilingMode::LowpassTruePeak {
-            peak = peak.push(field(
-                "Lowpass true-peak frequency (Hz)",
-                &self.library.draft.lowpass_cut,
-                Field::LowpassCut,
-            ));
-        }
-        let common: Element<'_, Message> = if wide_form {
+        let primary: Element<'_, Message> = if wide_form {
             row![loudness, peak].spacing(12).into()
         } else {
             column![loudness, rule::horizontal(1), peak]
@@ -786,53 +811,97 @@ impl App {
                 .into()
         };
         let mut settings = column![
-            common,
-            rule::horizontal(1),
-            checkbox(self.library.draft.mastering)
-                .label("Automatic mastering")
-                .on_toggle(Message::Mastering),
-            field(
-                "Intensity (0–1)",
-                &self.library.draft.intensity,
-                Field::Intensity
-            ),
+            text("Level & limiter").size(15),
+            primary,
+            button(if self.show_limiter_details {
+                "▾ Limiter details"
+            } else {
+                "▸ Limiter details"
+            })
+            .on_press(Message::ToggleLimiterDetails)
+            .padding(4)
+            .style(theme::normal),
         ]
         .spacing(7);
+        if self.show_limiter_details {
+            settings = settings.push(
+                column![
+                    checkbox(self.library.draft.preserve_bass)
+                        .label("Preserve bass")
+                        .on_toggle(Message::PreserveBass),
+                    self.numeric_choice("Oversampling", Field::Oversample, &model::OVERSAMPLING),
+                    text("Noise update").size(12),
+                    pick_list(
+                        NoiseMode::ALL,
+                        Some(self.library.draft.noise_mode),
+                        Message::NoiseMode
+                    )
+                    .width(Fill),
+                    row![
+                        self.numeric("Outer iterations", Field::MaxIter1),
+                        self.numeric("Inner iterations", Field::MaxIter2)
+                    ]
+                    .spacing(8),
+                    rule::horizontal(1),
+                    text("Pre-compression").size(14),
+                    checkbox(self.library.draft.pre_compression)
+                        .label("Pre-compression enabled")
+                        .on_toggle(Message::PreCompression),
+                ]
+                .spacing(7),
+            );
+        }
         settings = settings
             .push(rule::horizontal(1))
-            .push(text("Reference & tone").size(14))
+            .push(text("Automatic mastering").size(15))
             .push(
-                pick_list(
-                    self.reference_choices(),
-                    self.selected_reference(),
-                    Message::ChooseReference,
-                )
-                .width(Fill),
+                checkbox(self.library.draft.mastering)
+                    .label("Automatic mastering enabled")
+                    .on_toggle(Message::Mastering),
             )
+            .push(self.intensity_control())
+            .push(text("Reference").size(14))
+            .push(self.reference_control())
             .push(
-                checkbox(self.library.draft.preserve_bass)
-                    .label("Preserve bass")
-                    .on_toggle(Message::PreserveBass),
-            )
-            .push(
-                checkbox(self.library.draft.pre_compression)
-                    .label("Pre-compression")
-                    .on_toggle(Message::PreCompression),
-            )
+                button(if self.show_optimization {
+                    "▾ Optimization"
+                } else {
+                    "▸ Optimization"
+                })
+                .on_press(Message::ToggleOptimization)
+                .padding(4)
+                .style(theme::normal),
+            );
+        if self.show_optimization {
+            settings = settings.push(
+                column![
+                    controls::choice(
+                        Solver::ALL.to_vec(),
+                        Some(self.library.draft.solver),
+                        Message::Solver,
+                        self.library.draft.mastering
+                    ),
+                    row![
+                        self.numeric("Evaluations", Field::Evaluations),
+                        self.numeric("Seed", Field::Seed)
+                    ]
+                    .spacing(8),
+                ]
+                .spacing(7),
+            );
+        }
+        settings
+            .push(rule::horizontal(1))
+            .push(text("Band limits").size(15))
             .push(
                 row![
-                    field("Low cut (Hz)", &self.library.draft.low_cut, Field::LowCut),
-                    field(
-                        "High cut (Hz)",
-                        &self.library.draft.high_cut,
-                        Field::HighCut
-                    )
+                    self.numeric("Low cut (Hz)", Field::LowCut),
+                    self.numeric("High cut (Hz)", Field::HighCut)
                 ]
                 .spacing(8),
             )
-            .push(text("Both cuts 0: off; otherwise low < high < 22050 Hz.").size(11))
             .push(rule::horizontal(1))
-            .push(text("Output").size(14))
+            .push(text("Output").size(15))
             .push(
                 pick_list(
                     Format::ALL,
@@ -843,77 +912,19 @@ impl App {
             )
             .push(
                 row![
-                    field(
+                    self.numeric_choice(
                         "Sample rate (Hz)",
-                        &self.library.draft.sample_rate,
-                        Field::SampleRate
+                        Field::SampleRate,
+                        model::sample_rates(self.library.draft.format)
                     ),
-                    field(
-                        "WAV bits (32: float)",
-                        &self.library.draft.bit_depth,
-                        Field::BitDepth
-                    )
+                    self.numeric_choice("WAV bits (32: float)", Field::BitDepth, &[16, 24, 32]),
                 ]
                 .spacing(8),
             )
             .push(rule::horizontal(1))
-            .push(text("Limiter").size(14))
-            .push(field(
-                "Oversampling (1, 2, 4, 8, …)",
-                &self.library.draft.oversample,
-                Field::Oversample,
-            ))
-            .push(
-                row![
-                    field(
-                        "Outer iterations",
-                        &self.library.draft.max_iter1,
-                        Field::MaxIter1
-                    ),
-                    field(
-                        "Inner iterations",
-                        &self.library.draft.max_iter2,
-                        Field::MaxIter2
-                    )
-                ]
-                .spacing(8),
-            )
-            .push(text("Noise update").size(12))
-            .push(
-                pick_list(
-                    NoiseMode::ALL,
-                    Some(self.library.draft.noise_mode),
-                    Message::NoiseMode,
-                )
-                .width(Fill),
-            )
-            .push(rule::horizontal(1))
-            .push(text("Optimization").size(14))
-            .push(
-                pick_list(
-                    Solver::ALL,
-                    Some(self.library.draft.solver),
-                    Message::Solver,
-                )
-                .width(Fill),
-            )
-            .push(
-                row![
-                    field(
-                        "Evaluations",
-                        &self.library.draft.evaluations,
-                        Field::Evaluations
-                    ),
-                    field("Seed", &self.library.draft.seed, Field::Seed)
-                ]
-                .spacing(8),
-            )
-            .push(field(
-                "Workers (0: auto)",
-                &self.library.draft.workers,
-                Field::Workers,
-            ));
-        settings.into()
+            .push(text("Execution").size(15))
+            .push(self.numeric("Workers (0: auto)", Field::Workers))
+            .into()
     }
 
     fn app_settings_view(&self) -> Element<'_, Message> {
@@ -967,7 +978,7 @@ impl App {
             && let Some(job) = self.library.jobs.iter().find(|j| j.id == active.id)
         {
             footer = footer
-                .push(text(format!("Processing #{}", job.id)).size(12))
+                .push(text(format!("Processing {}", self.library.job_label(job))).size(12))
                 .push(container(progress_bar(0.0..=1.0, job.progress).girth(5)).width(100));
         }
         footer = footer.push(text(format!("{waiting} queued")).size(12));

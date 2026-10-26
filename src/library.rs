@@ -1,4 +1,5 @@
 //! Durable snapshots. External source/export paths are never used for playback.
+use uuid::Uuid;
 mod saver;
 mod storage;
 use crate::{
@@ -16,7 +17,7 @@ use std::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
-    pub id: usize,
+    pub id: Uuid,
     pub name: String,
     pub source: PathBuf,
     pub input: PathBuf,
@@ -33,11 +34,10 @@ pub struct Library {
     pub draft: Settings,
     pub tracks: Vec<Track>,
     pub jobs: Vec<Job>,
-    pub next_id: usize,
-    pub selected: Option<(usize, Option<usize>)>,
+    pub selected: Option<(Uuid, Option<Uuid>)>,
     pub output_side: Option<bool>,
     pub equalize: Option<bool>,
-    pub comparison_job: Option<usize>,
+    pub comparison_job: Option<Uuid>,
 }
 
 pub fn default_root() -> Result<PathBuf, String> {
@@ -101,7 +101,7 @@ pub fn verify(path: &Path, expected: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn import(root: &Path, source: PathBuf, id: usize) -> Result<Track, String> {
+pub fn import(root: &Path, source: PathBuf, id: Uuid) -> Result<Track, String> {
     if !source.is_file() {
         return Err("Choose an existing audio file.".into());
     }
@@ -153,17 +153,28 @@ impl Library {
         let bytes = fs::read(&path).map_err(|e| e.to_string())?;
         let document: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|e| format!("Cannot read saved library: {e}"))?;
-        let legacy = document.get("app_settings").is_none();
+        let legacy = document.get("app_settings").is_none()
+            || document.get("next_id").is_some()
+            || ["tracks", "jobs"].iter().any(|key| {
+                document
+                    .get(key)
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|items| {
+                        items
+                            .iter()
+                            .any(|item| item.get("id").is_some_and(serde_json::Value::is_number))
+                    })
+            });
         let mut library: Self = serde_json::from_value(document)
             .map_err(|e| format!("Cannot read saved library: {e}"))?;
         if legacy {
-            // Old builds cannot read the separated job format. Preserve the exact
+            // Old builds cannot read UUID identities. Preserve the exact
             // manifest before this build can save a migrated snapshot.
             let digest: String = Sha256::digest(&bytes)
                 .iter()
                 .map(|b| format!("{b:02x}"))
                 .collect();
-            let backup = root.join(format!("library-before-settings-separation-{digest}.json"));
+            let backup = root.join(format!("library-before-idname-{digest}.json"));
             if backup.exists() {
                 verify(&backup, &digest)?;
             } else {
@@ -208,16 +219,6 @@ impl Library {
                 job.status = Status::Interrupted;
             }
         }
-        // Reserve above every persisted ID, including libraries saved during an import.
-        library.next_id = library.next_id.max(
-            library
-                .tracks
-                .iter()
-                .map(|t| t.id)
-                .chain(library.jobs.iter().map(|j| j.id))
-                .max()
-                .map_or(0, |id| id + 1),
-        );
         Ok(library)
     }
 
@@ -315,9 +316,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("mix.wav");
         fs::write(&source, b"first").unwrap();
-        let first = import(dir.path(), source.clone(), 1).unwrap();
+        let first = import(dir.path(), source.clone(), Uuid::from_u128(1)).unwrap();
         fs::write(&source, b"second").unwrap();
-        let second = import(dir.path(), source.clone(), 2).unwrap();
+        let second = import(dir.path(), source.clone(), Uuid::from_u128(2)).unwrap();
         fs::remove_file(source).unwrap();
         verify(&first.input, &first.hash).unwrap();
         assert_ne!(first.hash, second.hash);
@@ -330,7 +331,7 @@ mod tests {
         let mut state = Library::default();
         let source = dir.path().join("mix.wav");
         fs::write(&source, b"audio").unwrap();
-        let track = import(dir.path(), source, 1).unwrap();
+        let track = import(dir.path(), source, Uuid::from_u128(1)).unwrap();
         state.app_settings.export_dir = dir.path().display().to_string();
         state.jobs.push(crate::model::test_job(
             track.input.clone(),
@@ -343,7 +344,7 @@ mod tests {
         state.save(dir.path()).unwrap();
         let loaded = Library::load(dir.path()).unwrap();
         assert_eq!(loaded.jobs[0].status, Status::Interrupted);
-        assert_eq!(loaded.next_id, 3);
+        assert_eq!(loaded.jobs[0].id, state.jobs[0].id);
         assert_eq!(loaded.tracks.len(), 1);
     }
     #[test]
@@ -351,7 +352,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("mix.wav");
         fs::write(&source, b"audio").unwrap();
-        let mut track = import(dir.path(), source, 0).unwrap();
+        let mut track = import(dir.path(), source, Uuid::from_u128(0)).unwrap();
         let bytes = br#"{"loudness":-9.200000000000003,"bands":[]}"#;
         track.analysis = Some(Analysis::store(dir.path(), bytes).unwrap());
         let mut state = Library::default();
@@ -366,7 +367,7 @@ mod tests {
             .unwrap()
             .to_path_buf();
         assert_eq!(fs::read(&artifact).unwrap(), bytes);
-        loaded.selected = Some((0, None));
+        loaded.selected = Some((Uuid::from_u128(0), None));
         loaded.save(dir.path()).unwrap();
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(dir.path().join("library.json")).unwrap()).unwrap();
@@ -409,7 +410,7 @@ mod tests {
         fs::write(&source, b"audio").unwrap();
         let mut state = Library::default();
         for id in 0..2 {
-            let mut track = import(dir.path(), source.clone(), id).unwrap();
+            let mut track = import(dir.path(), source.clone(), Uuid::from_u128(id)).unwrap();
             track.analysis = Some(
                 Analysis::store(
                     dir.path(),

@@ -11,7 +11,9 @@ bundle-version = "14"
 minimum-system-version = "14.0"
 
 [dependencies]
-iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "x11", "wayland", "tokio", "canvas", "image-without-codecs"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+iced = { version = "=0.14.0", default-features = false, features = ["advanced", "tiny-skia", "x11", "wayland", "tokio", "canvas", "image-without-codecs"] }
 tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros"] }
 tempfile = "3"
 serde = { version = "1.0.229", features = ["derive", "rc"] }

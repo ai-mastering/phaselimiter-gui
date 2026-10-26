@@ -1,10 +1,13 @@
 #![deny(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+use uuid::Uuid;
 mod analysis;
 mod backend;
 mod comparison;
+mod controls;
 mod diagnostics;
+mod labels;
 mod library;
 mod measurements;
 mod model;
@@ -25,7 +28,7 @@ type Element<'a, Message> = iced::Element<'a, Message, Theme>;
 use library::{Library, Track};
 use model::{CeilingMode, Format, Job, NoiseMode, ReferenceMode, Settings, Solver, Status};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
         Arc,
@@ -33,7 +36,7 @@ use std::{
     },
 };
 
-type AudioKey = (usize, Option<usize>);
+type AudioKey = (Uuid, Option<Uuid>);
 fn main() -> iced::Result {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
@@ -48,7 +51,7 @@ fn main() -> iced::Result {
         .exit_on_close_request(false)
         .run()
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Field {
     MaxIter2,
     MaxIter1,
@@ -68,6 +71,7 @@ enum Field {
     Workers,
     Evaluations,
     Seed,
+    Reference,
 }
 #[derive(Debug, Clone)]
 enum Message {
@@ -76,6 +80,9 @@ enum Message {
     ReferenceMode(ReferenceMode),
     Mastering(bool),
     Edit(Field, String),
+    Adjust(Field, bool),
+    CommitNumber(Field),
+    RevealNumber(Field, Option<f32>),
     Input(String),
     AddInput,
     FileDropped(PathBuf),
@@ -89,19 +96,23 @@ enum Message {
     Compose,
     ShowAnalysis,
     ShowMastering,
+    ToggleLimiterDetails,
+    ToggleOptimization,
     ToggleExport,
     ToggleAppSettings,
     ToggleHistory(bool),
     Compare(ComparisonChoice),
     ReferenceLoaded(PathBuf, Result<analysis::Analysis, String>),
-    UseSettings(usize),
+    UseSettings(Uuid),
+    EditMemo(Uuid, String),
+    SaveMemo,
     Master,
     Start,
     Cancel,
     Remove(AudioKey),
     Select(AudioKey),
-    Backend(usize, backend::Update),
-    Completed(usize, Result<String, String>),
+    Backend(Uuid, backend::Update),
+    Completed(Uuid, Result<String, String>),
     Analyzed(AudioKey, Result<analysis::Analysis, String>),
     Analyze,
     Side(bool),
@@ -115,8 +126,8 @@ enum Message {
     Prepared(PathBuf, Result<Arc<playback::Decoded>, String>),
     Graph(plots::Kind),
     Details,
-    CopyCommand(usize),
-    CopyLog(usize),
+    CopyCommand(Uuid),
+    CopyLog(Uuid),
     CopyText(String),
     SelectDiagnostic(String, iced::widget::text_editor::Action),
     UseBundledTools,
@@ -129,7 +140,7 @@ enum Message {
     Close,
 }
 struct Active {
-    id: usize,
+    id: Uuid,
     cancel: Arc<AtomicBool>,
     _handle: iced::task::Handle,
 }
@@ -151,17 +162,19 @@ struct App {
     show_export: bool,
     show_app_settings: bool,
     history_visibility: Option<bool>,
-    comparison_job: Option<usize>,
+    comparison_job: Option<Uuid>,
     reference_report: Option<(PathBuf, Result<analysis::Analysis, String>)>,
     reference_pending: Option<PathBuf>,
-    composer_track: Option<usize>,
+    composer_track: Option<Uuid>,
     show_details: bool,
+    show_limiter_details: bool,
+    show_optimization: bool,
     output_side: bool,
     graph: plots::Kind,
     analysis_queue: VecDeque<AudioKey>,
     analyzing: Option<AudioKey>,
     importing: usize,
-    finalizing: HashSet<usize>,
+    finalizing: HashSet<Uuid>,
     player: playback::Player,
     prepared: preparation::Cache,
     loading: bool,
@@ -173,7 +186,10 @@ struct App {
     duration: f64,
     export_path: String,
     storage_bytes: u64,
+    memo_save_at: Option<std::time::Instant>,
     diagnostics: Vec<diagnostics::Diagnostic>,
+    numeric_edits: HashMap<Field, String>,
+    numeric_errors: HashMap<Field, String>,
 }
 impl Default for App {
     fn default() -> Self {
@@ -200,6 +216,8 @@ impl Default for App {
             reference_pending: None,
             composer_track: None,
             show_details: false,
+            show_limiter_details: false,
+            show_optimization: false,
             output_side: false,
             graph: plots::Kind::Spectrum,
             analysis_queue: VecDeque::new(),
@@ -217,7 +235,10 @@ impl Default for App {
             duration: 0.,
             export_path: String::new(),
             storage_bytes: 0,
+            memo_save_at: None,
             diagnostics: Vec::new(),
+            numeric_edits: HashMap::new(),
+            numeric_errors: HashMap::new(),
         }
     }
 }
@@ -301,6 +322,7 @@ impl App {
         )
     }
     fn save(&mut self) -> bool {
+        self.memo_save_at = None;
         self.library.selected = self.selected;
         self.library.output_side = Some(self.output_side);
         self.library.equalize = Some(self.equalize);
@@ -353,8 +375,7 @@ impl App {
             self.error = Some("The data directory is unavailable.".into());
             return Task::none();
         };
-        let id = self.library.next_id;
-        self.library.next_id += 1;
+        let id = Uuid::new_v4();
         self.importing += 1;
         self.save();
         Task::perform(
@@ -434,10 +455,6 @@ impl App {
             .ok_or("Select an input first.")?
             .clone();
         let root = self.root.as_ref().ok_or("Data directory unavailable.")?;
-        let id = self.library.next_id;
-        self.library.next_id += 1;
-        let dir = root.join("jobs").join(id.to_string());
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let config = self.library.draft.parse()?;
         if let Some(reference) = &config.reference {
             let expected = self
@@ -457,9 +474,12 @@ impl App {
                         .find(|j| j.config.reference.as_ref() == Some(reference))
                         .and_then(|j| j.reference_hash.clone())
                 })
-                .ok_or("Choose an analyzed library audio as reference.")?;
-            library::verify(reference, &expected)?;
+                .ok_or("Reference: choose an analyzed library audio.")?;
+            library::verify(reference, &expected).map_err(|e| format!("Reference: {e}"))?;
         }
+        let id = Uuid::new_v4();
+        let dir = root.join("jobs").join(id.to_string());
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let output = dir.join("output").with_extension(config.format.extension());
         let reference_hash = config
             .reference
@@ -468,6 +488,8 @@ impl App {
             .transpose()?;
         self.library.jobs.push(Job {
             id,
+            created_at: Some(chrono::Utc::now()),
+            memo: String::new(),
             track_id: track.id,
             input: track.input,
             output,
@@ -494,6 +516,24 @@ impl App {
         let mut save = false;
         match message {
             Message::Edit(field, value) => {
+                if !controls::enabled(field, &self.library.draft) {
+                    return Task::none();
+                }
+                if let Some(spec) = controls::spec(field, &self.library.draft) {
+                    if spec.partial(&value) {
+                        self.numeric_edits.insert(field, value);
+                        return Task::none();
+                    }
+                    if !spec.valid(&value) {
+                        self.numeric_errors
+                            .insert(field, format!("Input rejected. {}", spec.hint()));
+                        return Task::none();
+                    }
+                    self.numeric_edits.remove(&field);
+                } else if !controls::valid_choice(field, &value, &self.library.draft) {
+                    return Task::none();
+                }
+                self.numeric_errors.remove(&field);
                 *self.field_mut(field) = value;
                 if matches!(field, Field::ExportDir) {
                     self.export_path = self
@@ -502,6 +542,30 @@ impl App {
                         .unwrap_or_default();
                 }
                 save = true;
+            }
+            Message::Adjust(field, up) => {
+                if controls::enabled(field, &self.library.draft)
+                    && let Some(spec) = controls::spec(field, &self.library.draft)
+                    && let Some(value) = spec.adjust(self.field_value(field), up)
+                {
+                    self.numeric_edits.remove(&field);
+                    self.numeric_errors.remove(&field);
+                    *self.field_mut(field) = value;
+                    save = true;
+                }
+            }
+            Message::CommitNumber(field) => {
+                self.numeric_edits.remove(&field);
+                self.numeric_errors.remove(&field);
+            }
+            Message::RevealNumber(field, offset) => {
+                if let Some(y) = offset {
+                    tasks.push(iced::widget::operation::scroll_to(
+                        "mastering-fields",
+                        iced::widget::operation::AbsoluteOffset { x: 0., y },
+                    ));
+                }
+                tasks.push(iced::widget::operation::focus(format!("number-{field:?}")));
             }
             Message::Input(value) => self.input = value,
             Message::AddInput => {
@@ -534,14 +598,20 @@ impl App {
             }
             Message::Mastering(v) => {
                 self.library.draft.mastering = v;
+                self.numeric_edits.clear();
+                self.numeric_errors.clear();
                 save = true;
             }
             Message::ReferenceMode(v) => {
                 self.library.draft.reference_mode = v;
+                self.numeric_edits.clear();
+                self.numeric_errors.clear();
                 save = true;
             }
             Message::CeilingMode(v) => {
                 self.library.draft.ceiling_mode = v;
+                self.numeric_edits.clear();
+                self.numeric_errors.clear();
                 save = true;
             }
             Message::NoiseMode(v) => {
@@ -550,9 +620,29 @@ impl App {
             }
             Message::Format(v) => {
                 self.library.draft.format = v;
+                self.numeric_edits.clear();
+                self.numeric_errors.clear();
+                let rates = model::sample_rates(v);
+                let rate = self
+                    .library
+                    .draft
+                    .sample_rate
+                    .parse::<u32>()
+                    .unwrap_or(44100);
+                if !rates.contains(&rate) {
+                    self.library.draft.sample_rate = rates
+                        .iter()
+                        .min_by_key(|r| r.abs_diff(rate))
+                        .copied()
+                        .unwrap_or(44100)
+                        .to_string();
+                }
                 save = true;
             }
             Message::Solver(v) => {
+                if !self.library.draft.mastering {
+                    return Task::none();
+                }
                 self.library.draft.solver = v;
                 save = true;
             }
@@ -565,6 +655,10 @@ impl App {
                 save = true;
             }
             Message::ChooseReference(choice) => {
+                if !self.library.draft.mastering {
+                    return Task::none();
+                }
+                self.numeric_errors.remove(&Field::Reference);
                 self.library.draft.reference = choice.path;
                 save = true;
             }
@@ -604,15 +698,41 @@ impl App {
                 if let Some(job) = self.library.jobs.iter().find(|j| j.id == id) {
                     self.composer_track = Some(job.track_id);
                     self.library.draft = settings_from_config(&job.config);
+                    self.numeric_edits.clear();
+                    self.numeric_errors.clear();
                     self.show_settings = true;
                     self.show_app_settings = false;
                     save = true;
                 }
             }
-            Message::Master => match self.queue_master() {
-                Ok(()) => save = true,
-                Err(error) => self.error = Some(error),
-            },
+            Message::ToggleLimiterDetails => {
+                self.show_limiter_details = !self.show_limiter_details;
+            }
+            Message::ToggleOptimization => {
+                self.show_optimization = !self.show_optimization;
+            }
+            Message::Master => {
+                self.numeric_edits.clear();
+                if let Some(field) = controls::first_invalid(self) {
+                    tasks.push(self.reveal_setting(field));
+                } else {
+                    match self.queue_master() {
+                        Ok(()) => {
+                            save = true;
+                            self.error = None;
+                            self.numeric_errors.clear();
+                        }
+                        Err(error) => {
+                            if error.starts_with("Reference:") {
+                                self.numeric_errors.insert(Field::Reference, error);
+                                tasks.push(self.reveal_setting(Field::Reference));
+                            } else {
+                                self.error = Some(error);
+                            }
+                        }
+                    }
+                }
+            }
             Message::Start => {
                 self.running = true;
             }
@@ -623,6 +743,9 @@ impl App {
                 }
             }
             Message::Select(key) => {
+                if self.memo_save_at.is_some() {
+                    self.save();
+                }
                 if self.selected.map(|k| k.0) != Some(key.0)
                     || key.1.is_none()
                     || self.comparison_job == key.1
@@ -893,7 +1016,21 @@ impl App {
                 self.update_gain();
                 save = true;
             }
+            Message::EditMemo(id, memo) => {
+                if let Some(job) = self.library.jobs.iter_mut().find(|job| job.id == id) {
+                    job.memo = memo;
+                    self.memo_save_at =
+                        Some(std::time::Instant::now() + std::time::Duration::from_millis(400));
+                }
+            }
+            Message::SaveMemo => save = true,
             Message::Tick => {
+                if self
+                    .memo_save_at
+                    .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+                {
+                    save = true;
+                }
                 if let Some(worker) = &self.save_worker
                     && let Some(error) = worker.error()
                 {
@@ -995,11 +1132,40 @@ impl App {
             .export_directory()
             .join(format!(
                 "{name}_master_{}.{}",
-                job.id,
+                job.created_at.map_or_else(
+                    || "undated".into(),
+                    |t| t
+                        .with_timezone(&chrono::Local)
+                        .format("%Y%m%d_%H%M%S%.9f")
+                        .to_string()
+                ),
                 job.config.format.extension()
             ))
             .display()
             .to_string()
+    }
+    fn field_value(&self, field: Field) -> &str {
+        match field {
+            Field::LowCut => &self.library.draft.low_cut,
+            Field::HighCut => &self.library.draft.high_cut,
+            Field::LowpassCut => &self.library.draft.lowpass_cut,
+            Field::Oversample => &self.library.draft.oversample,
+            Field::MaxIter1 => &self.library.draft.max_iter1,
+            Field::MaxIter2 => &self.library.draft.max_iter2,
+            Field::Backend => &self.library.app_settings.backend,
+            Field::Ffmpeg => &self.library.app_settings.ffmpeg,
+            Field::Cache => &self.library.app_settings.cache,
+            Field::ExportDir => &self.library.app_settings.export_dir,
+            Field::Loudness => &self.library.draft.loudness,
+            Field::Intensity => &self.library.draft.intensity,
+            Field::Ceiling => &self.library.draft.ceiling,
+            Field::SampleRate => &self.library.draft.sample_rate,
+            Field::BitDepth => &self.library.draft.bit_depth,
+            Field::Workers => &self.library.draft.workers,
+            Field::Evaluations => &self.library.draft.evaluations,
+            Field::Seed => &self.library.draft.seed,
+            Field::Reference => &self.library.draft.reference,
+        }
     }
     fn field_mut(&mut self, field: Field) -> &mut String {
         match field {
@@ -1021,6 +1187,7 @@ impl App {
             Field::Workers => &mut self.library.draft.workers,
             Field::Evaluations => &mut self.library.draft.evaluations,
             Field::Seed => &mut self.library.draft.seed,
+            Field::Reference => &mut self.library.draft.reference,
         }
     }
 }
@@ -1050,7 +1217,17 @@ impl App {
                     let analysis = t.analysis.as_ref().filter(|a| a.available())?;
                     Some(ReferenceChoice {
                         path: analysis.path()?.display().to_string(),
-                        label: format!("Reference: {} · #{}", t.name, t.id),
+                        label: format!(
+                            "Reference: {} · {}",
+                            t.name,
+                            chrono::DateTime::from_timestamp(t.added as i64, 0).map_or_else(
+                                || "Date unknown".into(),
+                                |t| t
+                                    .with_timezone(&chrono::Local)
+                                    .format("%Y/%m/%d %H:%M:%S")
+                                    .to_string()
+                            )
+                        ),
                     })
                 }),
         );
@@ -1125,16 +1302,67 @@ mod tests {
     fn app_with_track(dir: &std::path::Path) -> App {
         let source = dir.join("日本語 mix.wav");
         std::fs::write(&source, b"original audio").unwrap();
-        let track = library::import(dir, source, 0).unwrap();
+        let track = library::import(dir, source, Uuid::from_u128(0)).unwrap();
         let mut app = App {
             root: Some(dir.to_path_buf()),
             ..App::default()
         };
         app.library.app_settings.export_dir = dir.display().to_string();
         app.library.tracks.push(track);
-        app.library.next_id = 1;
-        app.selected = Some((0, None));
+        app.selected = Some((Uuid::from_u128(0), None));
         app
+    }
+    #[test]
+    fn validation_opens_the_collapsed_group_containing_the_invalid_setting() {
+        let mut app = App::default();
+        app.library.draft.max_iter1 = "invalid".into();
+        let _ = app.update(Message::Master);
+        assert!(app.show_limiter_details);
+        assert!(!app.show_optimization);
+        assert!(app.show_settings);
+        assert!(app.library.jobs.is_empty());
+        let _ = app.update(Message::Edit(Field::MaxIter1, "100".into()));
+        let _ = app.update(Message::ToggleLimiterDetails);
+        app.library.draft.seed = "invalid".into();
+        let _ = app.update(Message::Master);
+        assert!(!app.show_limiter_details);
+        assert!(app.show_optimization);
+        assert!(app.library.jobs.is_empty());
+    }
+    #[test]
+    fn numeric_edits_keep_valid_committed_settings_and_ignore_disabled_fields() {
+        let mut app = App::default();
+        for bad in ["banana", "-61", "NaN"] {
+            let _ = app.update(Message::Edit(Field::Loudness, bad.into()));
+            assert_eq!(app.library.draft.loudness, "-9");
+        }
+        let _ = app.update(Message::Edit(Field::Loudness, "-".into()));
+        assert_eq!(app.library.draft.loudness, "-9");
+        assert_eq!(app.numeric_edits[&Field::Loudness], "-");
+        let _ = app.update(Message::Edit(Field::Loudness, "-12.5".into()));
+        assert_eq!(app.library.draft.loudness, "-12.5");
+        assert!(app.numeric_edits.is_empty());
+        assert!(app.numeric_errors.is_empty());
+        let _ = app.update(Message::Adjust(Field::Loudness, true));
+        assert_eq!(app.library.draft.loudness, "-12.40");
+        let _ = app.update(Message::Mastering(false));
+        let before = app.library.draft.intensity.clone();
+        let _ = app.update(Message::Edit(Field::Intensity, "0.25".into()));
+        assert_eq!(app.library.draft.intensity, before);
+        let _ = app.update(Message::Edit(Field::Workers, "-1".into()));
+        assert_eq!(app.library.draft.workers, "0");
+    }
+    #[test]
+    fn format_switch_chooses_a_supported_rate_and_preserves_inactive_values() {
+        let mut app = App::default();
+        app.library.draft.sample_rate = "192000".into();
+        app.library.draft.bit_depth = "24".into();
+        let _ = app.update(Message::Format(Format::Mp3));
+        assert_eq!(app.library.draft.sample_rate, "48000");
+        let _ = app.update(Message::Edit(Field::BitDepth, "32".into()));
+        assert_eq!(app.library.draft.bit_depth, "24");
+        let _ = app.update(Message::Format(Format::Wav));
+        assert_eq!(app.library.draft.bit_depth, "24");
     }
     #[test]
     fn new_processing_settings_survive_history_recall() {
@@ -1163,18 +1391,23 @@ mod tests {
             .expect("set PHASELIMITER_PROFILE_LIBRARY");
         let original = Library::load(std::path::Path::new(&source)).unwrap();
         let mut state = original.clone();
-        for copy in 1..20 {
+        for _ in 1..20 {
+            let ids: std::collections::HashMap<_, _> = original
+                .tracks
+                .iter()
+                .map(|t| (t.id, Uuid::new_v4()))
+                .collect();
             state
                 .tracks
                 .extend(original.tracks.iter().cloned().map(|mut t| {
-                    t.id += copy * 100;
+                    t.id = ids[&t.id];
                     t
                 }));
             state
                 .jobs
                 .extend(original.jobs.iter().cloned().map(|mut j| {
-                    j.id += copy * 100;
-                    j.track_id += copy * 100;
+                    j.id = Uuid::new_v4();
+                    j.track_id = ids[&j.track_id];
                     j
                 }));
         }
@@ -1207,7 +1440,7 @@ mod tests {
             path.clone(),
             playback::test_audio(&[[0.2; 2]; 1000], Some(&path)),
         );
-        let _ = app.update(Message::Select((0, None)));
+        let _ = app.update(Message::Select((Uuid::from_u128(0), None)));
         assert!(app.loaded);
         assert!(!app.loading);
         assert!(app.error.is_none());
@@ -1238,13 +1471,13 @@ mod tests {
         let mut app = app_with_track(dir.path());
         let source = dir.path().join("other.wav");
         std::fs::write(&source, b"other audio").unwrap();
-        let track = library::import(dir.path(), source, 1).unwrap();
+        let track = library::import(dir.path(), source, Uuid::from_u128(1)).unwrap();
         let path = track.input.clone();
         app.library.tracks.push(track);
         let audio = playback::test_audio(&[[0.5; 2]; 1000], Some(&path));
         app.loading = true;
         let _ = app.update(Message::Prepared(path.clone(), Ok(audio)));
-        assert_eq!(app.selected, Some((0, None)));
+        assert_eq!(app.selected, Some((Uuid::from_u128(0), None)));
         assert!(!app.loaded);
         assert!(app.loading);
         assert!(app.prepared.contains_key(&path));
@@ -1257,15 +1490,14 @@ mod tests {
         std::fs::write(&source, b"another input").unwrap();
         app.library
             .tracks
-            .push(library::import(dir.path(), source, 1).unwrap());
-        app.library.next_id = 2;
+            .push(library::import(dir.path(), source, Uuid::from_u128(1)).unwrap());
         let _ = app.update(Message::Compose);
-        let _ = app.update(Message::Select((1, None)));
+        let _ = app.update(Message::Select((Uuid::from_u128(1), None)));
         let _ = app.update(Message::ShowAnalysis);
         let _ = app.update(Message::ShowMastering);
-        assert_eq!(app.composer_track, Some(0));
+        assert_eq!(app.composer_track, Some(Uuid::nil()));
         app.queue_master().unwrap();
-        assert_eq!(app.library.jobs[0].track_id, 0);
+        assert_eq!(app.library.jobs[0].track_id, Uuid::nil());
     }
     #[test]
     fn history_recall_preserves_tool_overrides_and_clearing_them_does_not_change_history() {
@@ -1274,14 +1506,14 @@ mod tests {
         app.queue_master().unwrap();
         app.running = false;
         let recorded = app.library.jobs[0].tools.backend.clone();
-        let _ = app.update(Message::UseSettings(1));
+        let _ = app.update(Message::UseSettings(app.library.jobs[0].id));
         assert!(app.library.app_settings.backend.is_empty());
         assert!(app.library.app_settings.ffmpeg.is_empty());
         assert!(app.library.app_settings.cache.is_empty());
         app.library.app_settings.backend = "explicit engine".into();
         app.library.app_settings.ffmpeg = "explicit ffmpeg".into();
         app.library.app_settings.cache = "explicit cache".into();
-        let _ = app.update(Message::UseSettings(1));
+        let _ = app.update(Message::UseSettings(app.library.jobs[0].id));
         assert_eq!(app.library.app_settings.backend, "explicit engine");
         assert_eq!(app.library.app_settings.ffmpeg, "explicit ffmpeg");
         assert_eq!(app.library.app_settings.cache, "explicit cache");
@@ -1309,9 +1541,12 @@ mod tests {
         app.running = false;
         let destination = dir.path().join("missing export directory");
         app.library.app_settings.export_dir = destination.display().to_string();
-        let _ = app.update(Message::Select((0, Some(1))));
+        let _ = app.update(Message::Select((
+            Uuid::from_u128(0),
+            Some(app.library.jobs[0].id),
+        )));
         assert!(std::path::Path::new(&app.export_path).starts_with(&destination));
-        let _ = app.update(Message::UseSettings(1));
+        let _ = app.update(Message::UseSettings(app.library.jobs[0].id));
         assert_eq!(app.library.app_settings.export_directory(), destination);
         app.queue_master().unwrap();
         app.running = false;
@@ -1322,7 +1557,10 @@ mod tests {
             new_destination.display().to_string(),
         ));
         assert!(std::path::Path::new(&app.export_path).starts_with(&new_destination));
-        let _ = app.update(Message::Select((0, Some(2))));
+        let _ = app.update(Message::Select((
+            Uuid::from_u128(0),
+            Some(app.library.jobs[1].id),
+        )));
         assert!(std::path::Path::new(&app.export_path).starts_with(new_destination));
         let saved = serde_json::to_value(&app.library).unwrap();
         assert!(saved["draft"].get("output_dir").is_none());
@@ -1335,7 +1573,10 @@ mod tests {
         let mut app = app_with_track(dir.path());
         app.queue_master().unwrap();
         app.running = false;
-        let _ = app.update(Message::Select((0, Some(1))));
+        let _ = app.update(Message::Select((
+            Uuid::from_u128(0),
+            Some(app.library.jobs[0].id),
+        )));
         let _ = app.update(Message::Compose);
         app.library.draft.loudness = "-12".into();
         app.library.draft.ceiling = "-1".into();
@@ -1348,17 +1589,26 @@ mod tests {
             iced::Size::new(850., 650.),
             app.view(),
         );
-        let changes = ui.find("Changes from Master #1").unwrap();
+        let changes = ui
+            .find(format!(
+                "Changes from {}",
+                app.library.job_label(&app.library.jobs[0])
+            ))
+            .unwrap();
         assert!(changes.visible_bounds().is_some());
         let run = ui.find("Run mastering").unwrap();
         assert!(run.visible_bounds().is_some());
         assert!(run.bounds().y > changes.bounds().y);
         assert!(run.bounds().y - changes.bounds().y < 220.);
         assert!(ui.find("Default export directory").is_err());
-        ui.click("Load settings from Master #1").unwrap();
+        ui.click(format!(
+            "Load settings from {}",
+            app.library.job_label(&app.library.jobs[0])
+        ))
+        .unwrap();
         assert!(
             ui.into_messages()
-                .any(|m| matches!(m, Message::UseSettings(1)))
+                .any(|m| matches!(m, Message::UseSettings(id) if id == app.library.jobs[0].id))
         );
     }
 
@@ -1377,11 +1627,17 @@ mod tests {
         assert_ne!(app.library.jobs[0].output, app.library.jobs[1].output);
         assert_eq!(app.library.draft.loudness, "-11");
         let before = app.library.draft.loudness.clone();
-        let _ = app.update(Message::Select((0, Some(1))));
+        let _ = app.update(Message::Select((
+            Uuid::from_u128(0),
+            Some(app.library.jobs[0].id),
+        )));
         assert_eq!(app.library.draft.loudness, before);
         assert!(app.output_side);
         let _ = app.update(Message::Side(false));
-        assert_eq!(app.selected, Some((0, Some(1))));
+        assert_eq!(
+            app.selected,
+            Some((Uuid::from_u128(0), Some(app.library.jobs[0].id)))
+        );
         assert!(!app.output_side);
     }
     #[test]
@@ -1405,16 +1661,36 @@ mod tests {
             );
         }
         app.library.draft.loudness = "-10".into();
-        let _ = app.update(Message::Select((0, Some(2))));
-        let _ = app.update(Message::Compare(ComparisonChoice { job: Some(1) }));
+        let _ = app.update(Message::Select((
+            Uuid::from_u128(0),
+            Some(app.library.jobs[1].id),
+        )));
+        let _ = app.update(Message::Compare(
+            app.comparison_choices()
+                .into_iter()
+                .find(|c| c.job == Some(app.library.jobs[0].id))
+                .unwrap(),
+        ));
         let _ = app.update(Message::Side(false));
-        assert_eq!(app.listening_key(), Some((0, Some(1))));
+        assert_eq!(
+            app.listening_key(),
+            Some((Uuid::from_u128(0), Some(app.library.jobs[0].id)))
+        );
         assert!((app.selected_gain() - 10f32.powf(-6. / 20.)).abs() < 0.0001);
         let _ = app.update(Message::Side(true));
-        assert_eq!(app.listening_key(), Some((0, Some(2))));
+        assert_eq!(
+            app.listening_key(),
+            Some((Uuid::from_u128(0), Some(app.library.jobs[1].id)))
+        );
         assert_eq!(app.library.draft.loudness, "-10");
-        assert_eq!(Library::load(dir.path()).unwrap().comparison_job, Some(1));
-        let _ = app.update(Message::Select((0, Some(1))));
+        assert_eq!(
+            Library::load(dir.path()).unwrap().comparison_job,
+            Some(app.library.jobs[0].id)
+        );
+        let _ = app.update(Message::Select((
+            Uuid::from_u128(0),
+            Some(app.library.jobs[0].id),
+        )));
         assert_eq!(app.comparison_job, None);
         assert_eq!(app.comparison_label(), "Original");
     }
@@ -1426,12 +1702,12 @@ mod tests {
         let _ = app.update(Message::Compose);
         app.queue_master().unwrap();
         assert!(app.show_settings);
-        assert_eq!(app.composer_track, Some(0));
+        assert_eq!(app.composer_track, Some(Uuid::nil()));
         app.library.draft.loudness = "-11".into();
         app.queue_master().unwrap();
         assert!(app.show_settings);
         assert_eq!(app.library.jobs[1].config.loudness, -11.);
-        assert_eq!(app.selected, Some((0, None)));
+        assert_eq!(app.selected, Some((Uuid::from_u128(0), None)));
     }
 
     #[test]
@@ -1444,9 +1720,15 @@ mod tests {
             .map(|i| format!("解析ログ {i}: {}", "x".repeat(2500)))
             .collect();
         for line in &lines {
-            let _ = app.update(Message::Backend(1, backend::Update::Line(line.clone())));
+            let _ = app.update(Message::Backend(
+                app.library.jobs[0].id,
+                backend::Update::Line(line.clone()),
+            ));
         }
-        let _ = app.update(Message::Backend(1, backend::Update::Cancelled));
+        let _ = app.update(Message::Backend(
+            app.library.jobs[0].id,
+            backend::Update::Cancelled,
+        ));
         assert_eq!(app.library.jobs[0].log, lines);
         let restored = Library::load(dir.path()).unwrap();
         assert_eq!(restored.jobs[0].log, lines);
@@ -1496,7 +1778,10 @@ mod tests {
         app.library.draft.reference = path.display().to_string();
         app.queue_master().unwrap();
         app.running = false;
-        let _ = app.update(Message::Select((0, Some(1))));
+        let _ = app.update(Message::Select((
+            Uuid::from_u128(0),
+            Some(app.library.jobs[0].id),
+        )));
         assert_eq!(app.reference_pending.as_ref(), Some(&path));
         let _ = app.update(Message::ReferenceLoaded(
             path.clone(),
@@ -1506,7 +1791,7 @@ mod tests {
             app.reference_analysis().unwrap().number("loudness"),
             Some(-12.)
         );
-        let _ = app.update(Message::Select((0, None)));
+        let _ = app.update(Message::Select((Uuid::from_u128(0), None)));
         let _ = app.update(Message::ReferenceLoaded(
             path.clone(),
             analysis::Analysis::read_report(path.clone()),
@@ -1556,17 +1841,25 @@ mod tests {
         app.running = false;
         let messages = {
             let mut ui = iced_test::simulator(app.view());
-            ui.find("日本語 mix.wav  · #0").unwrap();
-            let older = ui.find("Master 1 · -9 LUFS · Queued").unwrap();
-            let newer = ui.find("Master 2 · -12 LUFS · Queued").unwrap();
+            ui.find("日本語 mix.wav").unwrap();
+            let older = ui
+                .find(app.library.job_label(&app.library.jobs[0]))
+                .unwrap();
+            let newer = ui
+                .find(app.library.job_label(&app.library.jobs[1]))
+                .unwrap();
             assert!(newer.bounds().y < older.bounds().y);
-            ui.click("Master 1 · -9 LUFS · Queued").unwrap();
+            ui.click(app.library.job_label(&app.library.jobs[0]))
+                .unwrap();
             ui.into_messages()
         };
         for message in messages {
             let _ = app.update(message);
         }
-        assert_eq!(app.selected, Some((0, Some(1))));
+        assert_eq!(
+            app.selected,
+            Some((Uuid::from_u128(0), Some(app.library.jobs[0].id)))
+        );
         assert!(!app.show_settings);
     }
     #[test]
@@ -1575,12 +1868,64 @@ mod tests {
         let mut app = app_with_track(dir.path());
         app.queue_master().unwrap();
         app.running = false;
-        let _ = app.update(Message::Completed(1, Ok("checksum".into())));
-        assert_eq!(app.selected, Some((0, None)));
+        let _ = app.update(Message::Completed(
+            app.library.jobs[0].id,
+            Ok("checksum".into()),
+        ));
+        assert_eq!(app.selected, Some((Uuid::from_u128(0), None)));
         assert_eq!(app.library.jobs[0].status, Status::Succeeded);
         app.save();
         let loaded = Library::load(dir.path()).unwrap();
-        assert_eq!(loaded.selected, Some((0, None)));
+        assert_eq!(loaded.selected, Some((Uuid::from_u128(0), None)));
         assert_eq!(loaded.jobs[0].output_hash.as_deref(), Some("checksum"));
+    }
+    #[test]
+    fn memo_edits_autosave_latest_text_without_affecting_audio_or_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        app.running = false;
+        let id = app.library.jobs[0].id;
+        let created = app.library.jobs[0].created_at;
+        let output = app.library.jobs[0].output.clone();
+        let config = serde_json::to_value(&app.library.jobs[0].config).unwrap();
+        let _ = app.update(Message::Select((Uuid::nil(), Some(id))));
+        let export = app.export_path.clone();
+        for memo in ["低域", "低域控えめ", "今のところこれが良い"] {
+            let _ = app.update(Message::EditMemo(id, memo.into()));
+        }
+        assert_eq!(Library::load(dir.path()).unwrap().jobs[0].memo, "");
+        app.memo_save_at = Some(std::time::Instant::now());
+        let _ = app.update(Message::Tick);
+        let saved = Library::load(dir.path()).unwrap();
+        assert_eq!(saved.jobs[0].memo, "今のところこれが良い");
+        assert_eq!(saved.jobs[0].id, id);
+        assert_eq!(saved.jobs[0].created_at, created);
+        assert_eq!(saved.jobs[0].output, output);
+        assert_eq!(serde_json::to_value(&saved.jobs[0].config).unwrap(), config);
+        assert_eq!(saved.jobs[0].status, Status::Waiting);
+        assert_eq!(app.export_path, export);
+        assert_eq!(app.selected, Some((Uuid::nil(), Some(id))));
+        assert_eq!(saved.jobs.len(), 1);
+        assert_eq!(id.get_version(), Some(uuid::Version::Random));
+        let _ = app.update(Message::EditMemo(id, String::new()));
+        let _ = app.update(Message::Select((Uuid::nil(), None)));
+        assert_eq!(Library::load(dir.path()).unwrap().jobs[0].memo, "");
+    }
+
+    #[test]
+    fn normal_close_flushes_a_memo_before_the_debounce_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        app.running = false;
+        app.save_worker = Some(library::SaveWorker::new(dir.path().to_path_buf()).unwrap());
+        let id = app.library.jobs[0].id;
+        let _ = app.update(Message::EditMemo(id, "残しておく".into()));
+        let _ = app.update(Message::Close);
+        assert_eq!(
+            Library::load(dir.path()).unwrap().jobs[0].memo,
+            "残しておく"
+        );
     }
 }
