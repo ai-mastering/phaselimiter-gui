@@ -155,13 +155,7 @@ impl App {
 
     pub(super) fn reference_controls(&self) -> Element<'_, Message> {
         if !self.library.draft.use_reference {
-            return text(if self.library.draft.reference.is_empty() {
-                "Auto (no reference)"
-            } else {
-                "Saved reference"
-            })
-            .size(12)
-            .into();
+            return text("Auto (no reference)").size(12).into();
         }
         let label = if self.library.draft.reference_audio.is_empty() {
             "Browse…"

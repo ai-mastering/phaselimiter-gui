@@ -1,7 +1,6 @@
-use uuid::Uuid;
-mod storage;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Format {
@@ -123,7 +122,6 @@ impl std::fmt::Display for NoiseMode {
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Settings {
     pub noise_mode: NoiseMode,
     pub max_iter2: String,
@@ -135,8 +133,6 @@ pub struct Settings {
     pub high_cut: String,
     pub low_cut: String,
     pub mastering: bool,
-    // Legacy analysis-report selection, retained for saved settings.
-    pub reference: String,
     pub use_reference: bool,
     pub reference_audio: String,
     pub loudness: String,
@@ -154,12 +150,10 @@ pub struct Settings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
 pub struct AppSettings {
     pub backend: String,
     pub ffmpeg: String,
     pub cache: String,
-    #[serde(alias = "output_dir")]
     pub export_dir: String,
 }
 
@@ -274,7 +268,6 @@ impl Default for Settings {
             max_iter1: "100".into(),
             max_iter2: "400".into(),
             noise_mode: NoiseMode::Linear,
-            reference: String::new(),
             use_reference: false,
             reference_audio: String::new(),
             loudness: "-9".into(),
@@ -295,29 +288,17 @@ impl Default for Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_noise_mode")]
     pub noise_mode: NoiseMode,
-    #[serde(default = "default_max_iter2")]
     pub max_iter2: u32,
-    #[serde(default = "default_max_iter1")]
     pub max_iter1: u32,
-    #[serde(default = "default_oversample")]
     pub oversample: u32,
-    #[serde(default = "default_lowpass_cut")]
     pub lowpass_cut: f64,
-    #[serde(default = "default_ceiling_mode")]
     pub ceiling_mode: CeilingMode,
-    #[serde(default = "default_reference_mode")]
     pub reference_mode: ReferenceMode,
-    #[serde(default = "default_high_cut")]
     pub high_cut: f64,
-    #[serde(default = "default_low_cut")]
     pub low_cut: f64,
-    #[serde(default = "default_mastering")]
     pub mastering: bool,
-    #[serde(default)]
     pub reference: Option<PathBuf>,
-    #[serde(default)]
     pub reference_audio: Option<PathBuf>,
     pub loudness: f64,
     pub intensity: f64,
@@ -405,8 +386,7 @@ impl Settings {
             high_cut: number(&self.high_cut, "high_cut", 0.0, 22050.0)?,
             low_cut: number(&self.low_cut, "low_cut", 0.0, 22050.0)?,
             mastering: self.mastering,
-            reference: (self.mastering && !self.reference.is_empty())
-                .then(|| PathBuf::from(&self.reference)),
+            reference: None,
             reference_audio: (self.mastering && self.use_reference)
                 .then(|| PathBuf::from(&self.reference_audio)),
             loudness: if self.reference_mode != ReferenceMode::Zero {
@@ -499,23 +479,14 @@ impl std::fmt::Display for Status {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(try_from = "storage::SavedJob")]
 pub struct Job {
-    #[serde(default)]
     pub command: Option<String>,
-    #[serde(default)]
     pub track_id: Uuid,
-    #[serde(default)]
     pub output_hash: Option<String>,
-    #[serde(default)]
     pub input_hash: Option<String>,
-    #[serde(default)]
     pub reference_hash: Option<String>,
-    #[serde(default)]
     pub analysis: Option<crate::analysis::Analysis>,
-    #[serde(default)]
     pub analysis_error: Option<String>,
-    #[serde(default)]
     pub limiting_error: Option<f64>,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     pub memo: String,
@@ -553,46 +524,6 @@ pub fn test_job(input: PathBuf, output: PathBuf, config: Config, id: usize) -> J
     }
 }
 
-fn default_mastering() -> bool {
-    true
-}
-
-fn default_low_cut() -> f64 {
-    20.0
-}
-
-fn default_high_cut() -> f64 {
-    20000.0
-}
-
-fn default_reference_mode() -> ReferenceMode {
-    ReferenceMode::Loudness
-}
-
-fn default_ceiling_mode() -> CeilingMode {
-    CeilingMode::TruePeak
-}
-
-fn default_lowpass_cut() -> f64 {
-    15000.0
-}
-
-fn default_oversample() -> u32 {
-    1
-}
-
-fn default_max_iter1() -> u32 {
-    100
-}
-
-fn default_max_iter2() -> u32 {
-    400
-}
-
-fn default_noise_mode() -> NoiseMode {
-    NoiseMode::Linear
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,7 +540,6 @@ mod tests {
             seed: "overflow".into(),
             lowpass_cut: "invalid".into(),
             loudness: "invalid".into(),
-            reference: "missing.json".into(),
             use_reference: true,
             ..Settings::default()
         };
@@ -742,33 +672,6 @@ mod tests {
             )),
             PathBuf::from("version-c/Phaselimiter.app/Contents/Resources")
         );
-    }
-
-    #[test]
-    fn old_saved_configs_receive_backend_defaults() {
-        let settings = Settings {
-            ..Settings::default()
-        };
-        let mut value = serde_json::to_value(settings.parse().unwrap()).unwrap();
-        for name in [
-            "mastering",
-            "low_cut",
-            "high_cut",
-            "reference_mode",
-            "ceiling_mode",
-            "lowpass_cut",
-            "oversample",
-            "max_iter1",
-            "max_iter2",
-            "noise_mode",
-        ] {
-            value.as_object_mut().unwrap().remove(name);
-        }
-        let config: Config = serde_json::from_value(value).unwrap();
-        assert!(config.mastering);
-        assert_eq!(config.high_cut, 20000.0);
-        assert_eq!(config.oversample, 1);
-        assert_eq!(config.noise_mode, NoiseMode::Linear);
     }
 
     #[test]

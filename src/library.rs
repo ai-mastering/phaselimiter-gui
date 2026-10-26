@@ -1,7 +1,8 @@
 //! Durable snapshots. External source/export paths are never used for playback.
 use uuid::Uuid;
 mod saver;
-mod storage;
+#[cfg(test)]
+mod tests_storage;
 use crate::{
     analysis::Analysis,
     model::{AppSettings, Job, Settings, Status},
@@ -28,7 +29,6 @@ pub struct Track {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(try_from = "storage::SavedLibrary")]
 pub struct Library {
     pub app_settings: AppSettings,
     pub draft: Settings,
@@ -151,48 +151,8 @@ impl Library {
             return Ok(Self::default());
         }
         let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-        let document: serde_json::Value = serde_json::from_slice(&bytes)
+        let mut library: Self = serde_json::from_slice(&bytes)
             .map_err(|e| format!("Cannot read saved library: {e}"))?;
-        let legacy = document.get("app_settings").is_none()
-            || document.get("next_id").is_some()
-            || ["tracks", "jobs"].iter().any(|key| {
-                document
-                    .get(key)
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|items| {
-                        items
-                            .iter()
-                            .any(|item| item.get("id").is_some_and(serde_json::Value::is_number))
-                    })
-            });
-        let mut library: Self = serde_json::from_value(document)
-            .map_err(|e| format!("Cannot read saved library: {e}"))?;
-        if legacy {
-            // Old builds cannot read UUID identities. Preserve the exact
-            // manifest before this build can save a migrated snapshot.
-            let digest: String = Sha256::digest(&bytes)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect();
-            let backup = root.join(format!("library-before-idname-{digest}.json"));
-            if backup.exists() {
-                verify(&backup, &digest)?;
-            } else {
-                let mut temporary =
-                    tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
-                temporary
-                    .write_all(&bytes)
-                    .and_then(|_| temporary.as_file().sync_all())
-                    .map_err(|e| format!("Backing up the old library: {e}"))?;
-                match temporary.persist_noclobber(&backup) {
-                    Ok(_) => {}
-                    Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => {
-                        verify(&backup, &digest)?
-                    }
-                    Err(e) => return Err(format!("Backing up the old library: {e}")),
-                }
-            }
-        }
         for (analysis, error) in library
             .tracks
             .iter_mut()
