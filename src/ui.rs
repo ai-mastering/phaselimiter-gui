@@ -705,7 +705,11 @@ impl App {
                 } else {
                     "Run mastering"
                 })
-                .on_press_maybe(track.map(|_| Message::Master))
+                .on_press_maybe(
+                    track
+                        .filter(|_| self.reference_ready())
+                        .map(|_| Message::Master),
+                )
                 .width(Fill)
                 .padding(9),
             )
@@ -722,10 +726,11 @@ impl App {
         for (label, mut old, mut new) in differences {
             if label == "Reference report" {
                 old = self.reference_name();
-                new = self
-                    .selected_reference()
-                    .map(|r| r.label)
-                    .unwrap_or_else(|| "Default".into());
+                new = if self.library.draft.use_reference {
+                    self.library.draft.reference_audio.clone()
+                } else {
+                    "Auto (no reference)".into()
+                };
             }
             changes = changes.push(text(format!("{label}: {old} → {new}")).size(12));
         }
@@ -802,13 +807,13 @@ impl App {
             .push(rule::horizontal(1))
             .push(text("Reference & tone").size(14))
             .push(
-                pick_list(
-                    self.reference_choices(),
-                    self.selected_reference(),
-                    Message::ChooseReference,
+                checkbox(
+                    self.library.draft.use_reference || !self.library.draft.reference.is_empty(),
                 )
-                .width(Fill),
+                .label("Use reference audio")
+                .on_toggle(Message::ReferenceEnabled),
             )
+            .push(self.reference_controls())
             .push(
                 checkbox(self.library.draft.preserve_bass)
                     .label("Preserve bass")
