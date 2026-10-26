@@ -732,16 +732,8 @@ impl App {
                 None
             }
         });
-        if let Some((field, reason)) = &issue {
+        if let Some((_, reason)) = &issue {
             panel = panel.push(text(format!("Cannot run mastering: {reason}")).size(12));
-            if let Some(field) = field {
-                panel = panel.push(
-                    button("Show setting")
-                        .on_press(Message::ShowSettingIssue(*field))
-                        .padding(4)
-                        .style(theme::normal),
-                );
-            }
         }
         panel
             .push(

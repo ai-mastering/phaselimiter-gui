@@ -85,7 +85,6 @@ enum Message {
     Adjust(Field, bool),
     CommitNumber(Field),
     RevealNumber(Field, Option<f32>),
-    ShowSettingIssue(Field),
     NumberFocused(Field, String, bool),
     Input(String),
     AddInput,
@@ -600,9 +599,6 @@ impl App {
                     self.numeric_errors.insert(field, spec.hint());
                 }
             }
-            Message::ShowSettingIssue(field) => {
-                tasks.push(self.reveal_setting(field));
-            }
             Message::RevealNumber(field, offset) => {
                 if let Some(y) = offset {
                     tasks.push(iced::widget::operation::scroll_to(
@@ -718,7 +714,7 @@ impl App {
                 save = true;
             }
             Message::ReferencePath(path) => {
-                if !self.library.draft.mastering {
+                if !self.library.draft.mastering || path.is_empty() {
                     return Task::none();
                 }
                 self.numeric_errors.remove(&Field::Reference);
@@ -1501,7 +1497,7 @@ mod tests {
     }
 
     #[test]
-    fn reference_blockers_are_visible_by_run_and_link_to_the_reference_control() {
+    fn reference_blockers_are_visible_by_run_without_an_extra_navigation_button() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_track(dir.path());
         app.show_settings = true;
@@ -1524,19 +1520,49 @@ mod tests {
                     .is_some()
             );
             ui.click("Run mastering").unwrap();
-            ui.click("Show setting").unwrap();
+            assert!(ui.find("Show setting").is_err());
             let messages: Vec<_> = ui.into_messages().collect();
             assert!(!messages.iter().any(|m| matches!(m, Message::Master)));
-            assert!(
-                messages
-                    .iter()
-                    .any(|m| matches!(m, Message::ShowSettingIssue(Field::Reference)))
-            );
         }
         let _ = app.update(Message::Mastering(false));
         app.library.draft.reference_audio.clear();
         assert!(app.settings_issue().is_none());
         app.queue_master().unwrap();
+    }
+
+    #[test]
+    fn every_required_numeric_control_rejects_empty_input() {
+        let mut app = App::default();
+        app.library.draft.ceiling_mode = CeilingMode::LowpassTruePeak;
+        for field in [
+            Field::Loudness,
+            Field::Ceiling,
+            Field::LowpassCut,
+            Field::LowCut,
+            Field::HighCut,
+            Field::MaxIter1,
+            Field::MaxIter2,
+            Field::Workers,
+            Field::Evaluations,
+            Field::Seed,
+        ] {
+            let before = app.field_value(field).to_owned();
+            let _ = app.update(Message::Edit(field, String::new()));
+            assert_eq!(app.field_value(field), before, "{field:?}");
+            assert!(!app.numeric_edits.contains_key(&field), "{field:?}");
+            assert!(app.settings_issue().is_none(), "{field:?}");
+        }
+        // Deleting the sign of an unfinished decimal must not leave an empty buffer either.
+        let _ = app.update(Message::Edit(Field::Loudness, "-".into()));
+        let _ = app.update(Message::Edit(Field::Loudness, String::new()));
+        assert_eq!(app.numeric_edits[&Field::Loudness], "-");
+        let _ = app.update(Message::Edit(Field::Workers, i32::MAX.to_string()));
+        assert_eq!(app.library.draft.workers, i32::MAX.to_string());
+        let _ = app.update(Message::Edit(
+            Field::Workers,
+            (i32::MAX as u64 + 1).to_string(),
+        ));
+        assert_eq!(app.library.draft.workers, i32::MAX.to_string());
     }
 
     #[test]

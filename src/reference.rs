@@ -266,6 +266,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_reference_edits_keep_the_selected_file_and_prepared_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::default();
+        app.library.draft.use_reference = true;
+        app.library.draft.reference_audio = "target.wav".into();
+        app.draft_reference.report = Some(Ok(prepared(dir.path())));
+        let generation = app.draft_reference.generation;
+        let _ = app.update(Message::ReferencePath(String::new()));
+        assert_eq!(app.library.draft.reference_audio, "target.wav");
+        assert_eq!(app.draft_reference.generation, generation);
+        assert!(app.reference_ready());
+    }
+
+    #[test]
     fn enter_and_blur_flush_pending_edits_without_restarting_ready_work() {
         let mut app = App::default();
         app.library.draft.use_reference = true;

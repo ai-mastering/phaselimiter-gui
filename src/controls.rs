@@ -16,8 +16,7 @@ pub enum Number {
 }
 impl Number {
     pub fn partial(self, s: &str) -> bool {
-        s.is_empty()
-            || matches!(self, Self::Decimal { min, .. } if min < 0.) && matches!(s, "-" | "-.")
+        matches!(self, Self::Decimal { min, .. } if min < 0.) && matches!(s, "-" | "-.")
             || matches!(self, Self::Decimal { .. }) && s == "."
     }
     pub fn valid(self, s: &str) -> bool {
@@ -570,11 +569,12 @@ mod tests {
             max: 0.,
             step: 0.1,
         };
-        for partial in ["", "-", "-.", "."] {
+        for partial in ["-", "-.", "."] {
             assert!(n.partial(partial));
             assert!(!n.valid(partial));
         }
-        for bad in ["NaN", "inf", "banana", "-20.01", "0.01", "-1.234"] {
+        assert!(!n.partial(""));
+        for bad in ["", "NaN", "inf", "banana", "-20.01", "0.01", "-1.234"] {
             assert!(!n.valid(bad));
         }
         assert!(n.valid("-1.20"));
