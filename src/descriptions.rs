@@ -123,33 +123,38 @@ impl App {
 
     fn help_button(&self, topic: Topic) -> Element<'_, Message> {
         let selected = self.open_help == Some(topic);
-        button(text("i").size(12).align_x(iced::Center).width(Fill))
-            .width(18)
-            .height(18)
-            .padding(0)
-            .style(move |theme, status| {
-                let mut style = if selected {
-                    theme::selected(theme, status)
-                } else {
-                    theme::normal(theme, status)
-                };
-                style.border.radius = 9.into();
-                style
-            })
-            .on_press(Message::ToggleHelp(topic))
-            .into()
+        button(
+            text("i")
+                .size(theme::SMALL_TEXT)
+                .align_x(iced::Center)
+                .width(Fill),
+        )
+        .width(18)
+        .height(18)
+        .padding(0)
+        .style(move |theme, status| {
+            let mut style = if selected {
+                theme::selected(theme, status)
+            } else {
+                theme::normal(theme, status)
+            };
+            style.border.radius = 9.into();
+            style
+        })
+        .on_press(Message::ToggleHelp(topic))
+        .into()
     }
 
     pub(super) fn help_label(&self, label: &'static str, topic: Topic) -> Element<'_, Message> {
         row![
-            text(label).size(12).color(match topic {
+            text(label).color(match topic {
                 Topic::Field(field) if !crate::controls::enabled(field, &self.library.draft) =>
                     theme::DISABLED_LABEL,
                 _ => theme::LABEL,
             }),
             self.help_button(topic)
         ]
-        .spacing(4)
+        .spacing(theme::ITEM_GAP)
         .align_y(iced::Center)
         .into()
     }
@@ -163,11 +168,11 @@ impl App {
             column![
                 control,
                 text(format!("• Previous: {previous}"))
-                    .size(11)
+                    .size(theme::SMALL_TEXT)
                     .color(theme::DISABLED_LABEL)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             ]
-            .spacing(3)
+            .spacing(theme::ITEM_GAP)
             .into()
         } else {
             control
@@ -177,7 +182,7 @@ impl App {
         }
         column![
             control,
-            container(text(self.description(topic)).size(12))
+            container(text(self.description(topic)).size(theme::SMALL_TEXT))
                 .padding(8)
                 .width(Fill)
                 .style(|_: &theme::Theme| iced::widget::container::Style {
@@ -190,7 +195,7 @@ impl App {
                     ..Default::default()
                 })
         ]
-        .spacing(5)
+        .spacing(theme::ITEM_GAP)
         .into()
     }
 
@@ -202,7 +207,7 @@ impl App {
         self.help_body(
             topic,
             row![control, self.help_button(topic)]
-                .spacing(4)
+                .spacing(theme::ITEM_GAP)
                 .align_y(iced::Center)
                 .into(),
         )
@@ -217,7 +222,7 @@ impl App {
         self.help_body(
             topic,
             column![self.help_label(label, topic), control]
-                .spacing(3)
+                .spacing(theme::ITEM_GAP)
                 .into(),
         )
     }

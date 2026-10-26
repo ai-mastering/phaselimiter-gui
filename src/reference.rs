@@ -155,7 +155,7 @@ impl App {
 
     pub(super) fn reference_controls(&self) -> Element<'_, Message> {
         if !self.library.draft.use_reference {
-            return text("Auto (no reference)").size(12).into();
+            return text("Auto (no reference)").size(theme::SMALL_TEXT).into();
         }
         let label = if self.library.draft.reference_audio.is_empty() {
             "Browse…"
@@ -164,8 +164,7 @@ impl App {
         };
         let enabled = self.library.draft.mastering;
         let mut input = text_input("Reference audio file", &self.library.draft.reference_audio)
-            .id("reference-path")
-            .padding(5);
+            .id("reference-path");
         if enabled
             && (self.numeric_errors.contains_key(&Field::Reference)
                 || matches!(self.draft_reference.report, Some(Err(_))))
@@ -184,9 +183,9 @@ impl App {
                     .on_press_maybe(enabled.then_some(Message::BrowseReference))
                     .style(theme::normal)
             ]
-            .spacing(6)
+            .spacing(theme::SECTION_GAP)
         ]
-        .spacing(4);
+        .spacing(theme::ITEM_GAP);
         if !enabled {
             return controls.into();
         }

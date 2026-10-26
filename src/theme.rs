@@ -18,6 +18,12 @@ const EDGE: Color = iced::color!(0x7F8C9D);
 const BLUE: Color = iced::color!(0x245DAD);
 const MUTED: Color = iced::color!(0x68685F);
 const DISABLED: Color = iced::color!(0xE2E0D5);
+// Ordinary controls use iced defaults. Only secondary text and headings differ.
+pub const SMALL_TEXT: f32 = 12.;
+pub const HEADING_TEXT: f32 = 18.;
+pub const ITEM_GAP: f32 = 4.;
+pub const SECTION_GAP: f32 = 8.;
+
 pub const LABEL: Color = INK;
 pub const DISABLED_LABEL: Color = MUTED;
 pub const ERROR: Color = iced::color!(0xA52D28);

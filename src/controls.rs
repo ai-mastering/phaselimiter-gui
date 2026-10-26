@@ -157,7 +157,6 @@ pub fn choice<'a, T: Clone + PartialEq + ToString + 'a>(
                 .unwrap_or_else(|| "—".into())
         )))
         .width(Fill)
-        .padding(6)
         .into()
     }
 }
@@ -225,7 +224,6 @@ impl App {
         };
         let mut input = text_input(label, buffer)
             .id(format!("number-{field:?}"))
-            .padding(5)
             .style(if invalid {
                 theme::invalid_input
             } else {
@@ -249,9 +247,9 @@ impl App {
         .spacing(1);
         let mut content = column![
             self.help_label(label, crate::descriptions::Topic::Field(field)),
-            row![input, arrows].spacing(3)
+            row![input, arrows].spacing(theme::ITEM_GAP)
         ]
-        .spacing(3)
+        .spacing(theme::ITEM_GAP)
         .width(Fill);
         if (invalid || enabled && self.numeric_errors.contains_key(&field))
             && let Some(spec) = spec
@@ -263,7 +261,7 @@ impl App {
                         .cloned()
                         .unwrap_or_else(|| spec.hint()),
                 )
-                .size(11)
+                .size(theme::SMALL_TEXT)
                 .color(if invalid {
                     theme::ERROR
                 } else {
@@ -276,7 +274,7 @@ impl App {
                 text(format!(
                     "Unfinished input; current setting: {value}. Enter to restore."
                 ))
-                .size(11)
+                .size(theme::SMALL_TEXT)
                 .color(theme::DISABLED_LABEL),
             );
         }
@@ -308,12 +306,12 @@ impl App {
                 enabled
             )
         ]
-        .spacing(3)
+        .spacing(theme::ITEM_GAP)
         .width(Fill);
         if invalid {
             col = col.push(
                 text("Choose a supported value.")
-                    .size(11)
+                    .size(theme::SMALL_TEXT)
                     .color(theme::ERROR),
             );
         }
@@ -363,12 +361,16 @@ impl App {
                     theme::DISABLED_LABEL
                 })
             ]
-            .spacing(8)
+            .spacing(theme::SECTION_GAP)
             .align_y(iced::Center)
         ]
-        .spacing(5);
+        .spacing(theme::ITEM_GAP);
         if invalid {
-            content = content.push(text("Use 0.00–1.00.").size(11).color(theme::ERROR));
+            content = content.push(
+                text("Use 0.00–1.00.")
+                    .size(theme::SMALL_TEXT)
+                    .color(theme::ERROR),
+            );
         }
         group(
             self.help_body(
@@ -480,7 +482,7 @@ impl App {
         reveal(field)
     }
     pub(super) fn reference_control(&self) -> Element<'_, Message> {
-        let content = column![self.reference_controls()].spacing(3);
+        let content = column![self.reference_controls()].spacing(theme::ITEM_GAP);
         let error = self
             .numeric_errors
             .get(&Field::Reference)

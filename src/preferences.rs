@@ -169,8 +169,9 @@ impl App {
             return space().into();
         };
         let mut content = column![
-            text("Engine & resources").size(15),
-            text("Blank paths use the bundled tools. Otherwise, enter an absolute path.").size(12),
+            text("Engine & resources").size(theme::HEADING_TEXT),
+            text("Blank paths use the bundled tools. Otherwise, enter an absolute path.")
+                .size(theme::SMALL_TEXT),
             button("Clear paths / use bundled tools")
                 .on_press(Message::Preferences(Event::UseBundledTools))
                 .style(theme::normal),
@@ -195,26 +196,26 @@ impl App {
             text(format!(
                 "Library: {:.1} MiB",
                 self.storage_bytes as f64 / 1048576.
-            ))
-            .size(14),
+            )),
             text(
                 self.library_folder()
                     .map(|path| path.display().to_string())
                     .unwrap_or_default()
             )
-            .size(12)
+            .size(theme::SMALL_TEXT)
             .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             button("Open library folder")
                 .on_press(Message::OpenLibrary)
                 .style(theme::normal),
-            text("Queued and running mastering jobs keep their existing settings.").size(12),
+            text("Queued and running mastering jobs keep their existing settings.")
+                .size(theme::SMALL_TEXT),
         ]
-        .spacing(10)
+        .spacing(theme::SECTION_GAP)
         .width(Fill);
         if let Some(error) = &dialog.error {
             content = content.push(
                 text(error)
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .color(theme::ERROR),
             );
@@ -224,26 +225,21 @@ impl App {
                 scrollable(content)
                     .id("preferences-fields")
                     .height(Fill)
-                    .spacing(6),
+                    .spacing(theme::SECTION_GAP),
                 rule::horizontal(1),
                 row![
                     space().width(Fill),
-                    button("OK")
-                        .width(80)
-                        .height(30)
-                        .style(theme::normal)
-                        .on_press_maybe(
-                            (!dialog.picker_pending).then_some(Message::Preferences(Event::Accept))
-                        ),
+                    button("OK").width(80).style(theme::normal).on_press_maybe(
+                        (!dialog.picker_pending).then_some(Message::Preferences(Event::Accept))
+                    ),
                     button("Cancel")
                         .width(80)
-                        .height(30)
                         .style(theme::normal)
                         .on_press(Message::Preferences(Event::Cancel)),
                 ]
-                .spacing(8),
+                .spacing(theme::SECTION_GAP),
             ]
-            .spacing(10),
+            .spacing(theme::SECTION_GAP),
         )
         .padding(12)
         .width(Fill)
@@ -259,18 +255,17 @@ impl App {
     ) -> Element<'a, Message> {
         let mut control = column![
             row![
-                text(label).size(12),
-                button(text("i").size(12))
+                text(label),
+                button(text("i").size(theme::SMALL_TEXT))
                     .padding([0, 5])
                     .style(theme::normal)
                     .on_press(Message::Preferences(Event::Help(field)))
             ]
-            .spacing(5)
+            .spacing(theme::ITEM_GAP)
             .align_y(iced::Center),
             row![
                 text_input(label, value)
                     .id(format!("preference-{field:?}"))
-                    .padding(5)
                     .on_input(move |value| Message::Preferences(Event::Edit(field, value)))
                     .on_submit(Message::Preferences(Event::Accept)),
                 button("Browse…").style(theme::normal).on_press_maybe(
@@ -280,16 +275,17 @@ impl App {
                         .map(|_| Message::Preferences(Event::Browse(field)))
                 ),
             ]
-            .spacing(8)
+            .spacing(theme::SECTION_GAP)
             .align_y(iced::Center),
         ]
-        .spacing(4);
+        .spacing(theme::ITEM_GAP);
         if self
             .preferences
             .as_ref()
             .is_some_and(|dialog| dialog.help == Some(field))
         {
-            control = control.push(text(self.description(Topic::Field(field))).size(12));
+            control =
+                control.push(text(self.description(Topic::Field(field))).size(theme::SMALL_TEXT));
         }
         control.into()
     }

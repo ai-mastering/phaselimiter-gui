@@ -2501,6 +2501,28 @@ mod tests {
     }
 
     #[test]
+    fn transport_labels_share_the_standard_text_height() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.queue_master().unwrap();
+        app.library.jobs[0].status = Status::Succeeded;
+        let job = &app.library.jobs[0];
+        app.selected = Some((job.track_id, job.id));
+        let b_label = format!("B: {}", app.library.job_label(job));
+        let mut ui = iced_test::Simulator::with_size(
+            Default::default(),
+            iced::Size::new(2000., 800.),
+            app.view(),
+        );
+        let play = ui.find("Play").unwrap().bounds();
+        for label in ["A: Original", b_label.as_str()] {
+            let side = ui.find(label).unwrap().bounds();
+            assert!((side.height - play.height).abs() < 0.01, "{label}");
+            assert!((side.y - play.y).abs() < 0.01, "{label}");
+        }
+    }
+
+    #[test]
     fn completed_result_settings_remain_editable_and_run_has_full_hit_area() {
         use iced::widget::Id;
         let dir = tempfile::tempdir().unwrap();
@@ -2573,8 +2595,8 @@ mod tests {
                         .visible_bounds()
                         .unwrap();
                     assert!(run.height >= 20.);
-                    // Probe near both edges of the 40px button, beyond its text.
-                    for y in [run.center().y - 18., run.center().y, run.center().y + 18.] {
+                    // The padding above and below the label must also be clickable.
+                    for y in [run.y - 2., run.center().y, run.y + run.height + 2.] {
                         ui.point_at(iced::Point::new(run.center().x, y));
                         ui.simulate(iced_test::simulator::click());
                     }

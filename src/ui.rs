@@ -37,30 +37,36 @@ impl App {
     }
 
     fn workspace_view(&self) -> Element<'_, Message> {
-        let mut body = column![self.menu_bar()].spacing(8);
+        let mut body = column![self.menu_bar()].spacing(theme::SECTION_GAP);
         if self.show_audio_path {
             body = body.push(
                 row![
                     text_input("Paste an audio file path", &self.input)
                         .on_input(Message::Input)
-                        .on_submit(Message::AddInput)
-                        .padding(6),
+                        .on_submit(Message::AddInput),
                     button("Master")
                         .on_press_maybe((!self.input.is_empty()).then_some(Message::AddInput))
-                        .style(theme::normal)
-                        .padding(6),
+                        .style(theme::normal),
                 ]
-                .spacing(6),
+                .spacing(theme::SECTION_GAP),
             );
         }
         let mut workspace = row![self.history_view(), rule::vertical(1)]
-            .spacing(10)
+            .spacing(theme::SECTION_GAP)
             .height(Fill);
-        let mut center = column![].spacing(8).width(Fill).height(Fill);
+        let mut center = column![]
+            .spacing(theme::SECTION_GAP)
+            .width(Fill)
+            .height(Fill);
         if let Some(track) = self.track() {
             let mut title = row![
                 column![
-                    compact_text(track.name.clone(), source_tooltip(track), 17., true),
+                    compact_text(
+                        track.name.clone(),
+                        source_tooltip(track),
+                        theme::HEADING_TEXT,
+                        true
+                    ),
                     text(
                         self.job()
                             .map(|job| format!(
@@ -70,20 +76,19 @@ impl App {
                             ))
                             .unwrap_or_default()
                     )
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 ]
-                .spacing(3)
+                .spacing(theme::ITEM_GAP)
                 .width(Fill)
             ]
-            .spacing(6)
+            .spacing(theme::SECTION_GAP)
             .align_y(iced::Center);
             if self.job().is_some_and(|j| j.status == Status::Succeeded) {
                 title = title.push(
                     button("Export")
                         .on_press(Message::Export)
-                        .style(theme::normal)
-                        .padding(4),
+                        .style(theme::normal),
                 );
             }
             center = center.push(title);
@@ -94,7 +99,7 @@ impl App {
                 bottom: 10.,
                 ..iced::Padding::ZERO
             }))
-            .spacing(4)
+            .spacing(theme::ITEM_GAP)
             .height(Fill)
             .width(Fill),
         );
@@ -142,16 +147,16 @@ impl App {
             let failed = matches!(job.status, Status::Failed | Status::Interrupted);
             let label = if failed { format!("! {label}") } else { label };
             let cells = row![
-                container(compact_text(label, detail, 12., false)).width(132),
+                container(compact_text(label, detail, theme::SMALL_TEXT, false)).width(132),
                 container(compact_text(
                     track.name.clone(),
                     source_tooltip(track),
-                    12.,
+                    theme::SMALL_TEXT,
                     true
                 ))
                 .width(Fill),
             ]
-            .spacing(8)
+            .spacing(theme::SECTION_GAP)
             .align_y(iced::Center);
             let selected = self.selected == Some(key);
             let row = button(cells)
@@ -181,7 +186,7 @@ impl App {
         let list: Element<'_, Message> = scrollable(history)
             .id("history-list")
             .on_scroll(|viewport| Message::HistoryScroll(viewport.absolute_offset().y))
-            .spacing(4)
+            .spacing(theme::ITEM_GAP)
             .height(Fill)
             .into();
         let list = crate::history::HistoryInput {
@@ -191,24 +196,23 @@ impl App {
             offset: self.history_offset,
         };
         let pane = column![
-            text("Audio & history").size(15),
+            text("Audio & history").size(theme::HEADING_TEXT),
             button("Master audio…")
                 .on_press(Message::BrowseAudio)
-                .width(Fill)
-                .padding(6),
-            text("Drop audio to master").size(12),
+                .width(Fill),
+            text("Drop audio to master").size(theme::SMALL_TEXT),
             container(
                 row![
-                    text("Time").size(12).width(132),
-                    text("Input audio").size(12).width(Fill)
+                    text("Time").size(theme::SMALL_TEXT).width(132),
+                    text("Input audio").size(theme::SMALL_TEXT).width(Fill)
                 ]
-                .spacing(8)
+                .spacing(theme::SECTION_GAP)
             )
             .padding([0, 5]),
             rule::horizontal(1),
             Element::from(list),
         ]
-        .spacing(8);
+        .spacing(theme::SECTION_GAP);
         container(pane)
             .clip(true)
             .width(HISTORY_WIDTH)
@@ -225,7 +229,7 @@ impl App {
             })
             .on_press_maybe(self.loaded.then_some(Message::Play))
         ]
-        .spacing(6)
+        .spacing(theme::SECTION_GAP)
         .align_y(iced::Center);
         if let Some(job) = self.job() {
             controls = controls
@@ -234,7 +238,7 @@ impl App {
                         format!("A: {}", self.comparison_label()),
                         self.comparison_job()
                             .map_or_else(|| "Original".into(), |j| j.memo.clone()),
-                        13.,
+                        iced::Settings::default().default_text_size.0,
                         false,
                     ))
                     .width(Fill)
@@ -249,7 +253,7 @@ impl App {
                     button(compact_text(
                         format!("B: {}", self.library.job_label(job)),
                         job.memo.clone(),
-                        13.,
+                        iced::Settings::default().default_text_size.0,
                         false,
                     ))
                     .width(Fill)
@@ -304,26 +308,25 @@ impl App {
                         clock(self.position),
                         clock(self.duration)
                     ))
-                    .size(12),
+                    .size(theme::SMALL_TEXT),
                 ]
-                .spacing(8)
+                .spacing(theme::SECTION_GAP)
                 .align_y(iced::Center),
             )
-            .spacing(5);
-        let mut loop_row = row![text("Click: seek · Drag: loop").size(11)]
-            .spacing(8)
+            .spacing(theme::ITEM_GAP);
+        let mut loop_row = row![text("Click: seek · Drag: loop").size(theme::SMALL_TEXT)]
+            .spacing(theme::SECTION_GAP)
             .align_y(iced::Center);
         if let Some((a, b)) = self.region {
             loop_row = loop_row
                 .push(
                     text(format!("{}–{}", clock(a), clock(b)))
-                        .size(11)
+                        .size(theme::SMALL_TEXT)
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 )
                 .push(
                     button("Clear loop")
                         .on_press(Message::ClearRegion)
-                        .padding(2)
                         .style(theme::normal),
                 );
         }
@@ -335,13 +338,12 @@ impl App {
         let Some(track) = self.track() else {
             return column![
                 text("Master audio to create a result")
-                    .size(18)
+                    .size(theme::HEADING_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 text("History switches audio at the same playback position.")
-                    .size(13)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             ]
-            .spacing(8)
+            .spacing(theme::SECTION_GAP)
             .into();
         };
         let job = self.job();
@@ -351,10 +353,9 @@ impl App {
         let mut detail = column![
             button("Copy source path")
                 .on_press(Message::CopyText(track.source.display().to_string()))
-                .padding(3)
                 .style(theme::normal),
         ]
-        .spacing(7)
+        .spacing(theme::SECTION_GAP)
         .width(Fill);
         if let Some(job) = job {
             detail = detail.push(
@@ -374,7 +375,7 @@ impl App {
                         )
                     },
                 ))
-                .size(11)
+                .size(theme::SMALL_TEXT)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             );
             let choices = self.comparison_choices();
@@ -385,7 +386,7 @@ impl App {
             );
             detail = detail.push(
                 row![
-                    text("Compare A").size(12),
+                    text("Compare A"),
                     responsive(move |bounds| {
                         let mut visible = choices.clone();
                         for choice in &mut visible {
@@ -393,7 +394,7 @@ impl App {
                                 &choice.label,
                                 (bounds.width - 44.).max(0.),
                                 false,
-                                |s| text_width(s, 12.),
+                                |s| text_width(s, iced::Settings::default().default_text_size.0),
                             );
                         }
                         let selected = visible.iter().find(|c| c.job == selected_id).cloned();
@@ -403,9 +404,7 @@ impl App {
                             original.map_or("", |c| c.label.as_str()),
                             &selected_full,
                         );
-                        let control = pick_list(visible, selected, Message::Compare)
-                            .text_size(12)
-                            .width(Fill);
+                        let control = pick_list(visible, selected, Message::Compare).width(Fill);
                         if !show_tooltip {
                             return control.into();
                         }
@@ -413,7 +412,7 @@ impl App {
                             control,
                             container(
                                 text(selected_full.clone())
-                                    .size(12)
+                                    .size(theme::SMALL_TEXT)
                                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                                     .width(Fill),
                             )
@@ -425,28 +424,28 @@ impl App {
                         .snap_within_viewport(true)
                         .into()
                     })
-                    .height(30.),
+                    .height(32.),
                 ]
-                .spacing(8)
+                .spacing(theme::SECTION_GAP)
                 .align_y(iced::Center),
             );
         }
         let numeric_width = 99.;
         let mut heading = row![
             text("Measurement")
-                .size(12)
+                .size(theme::SMALL_TEXT)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                 .width(172),
             text("Original")
-                .size(12)
+                .size(theme::SMALL_TEXT)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                 .width(numeric_width)
         ]
-        .spacing(6);
+        .spacing(theme::SECTION_GAP);
         if let Some(baseline) = baseline {
             heading = heading.push(
                 text(format!("A\n{}", self.library.job_time_label(baseline)))
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .width(numeric_width),
             );
@@ -454,7 +453,7 @@ impl App {
         if let Some(job) = job {
             heading = heading.push(
                 text(format!("B\n{}", self.library.job_time_label(job)))
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .width(numeric_width),
             );
@@ -462,21 +461,21 @@ impl App {
         if has_reference {
             heading = heading.push(
                 text("Reference")
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .width(numeric_width),
             );
         }
-        let mut table = column![heading, rule::horizontal(1)].spacing(3);
+        let mut table = column![heading, rule::horizontal(1)].spacing(theme::ITEM_GAP);
         for metric in measurements::ALL {
             let mut values = row![
                 text(metric.label)
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .width(172),
                 numeric_cell(metric.format(track.analysis.as_ref()), numeric_width)
             ]
-            .spacing(6);
+            .spacing(theme::SECTION_GAP);
             if let Some(baseline) = baseline {
                 values = values.push(numeric_cell(
                     metric.format(baseline.analysis.as_ref()),
@@ -497,12 +496,12 @@ impl App {
         if let Some(job) = job {
             let mut values = row![
                 text("Limiting error")
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .width(172),
                 numeric_cell("—".into(), numeric_width)
             ]
-            .spacing(6);
+            .spacing(theme::SECTION_GAP);
             if let Some(baseline) = baseline {
                 values = values.push(numeric_cell(
                     error_value(baseline.limiting_error),
@@ -515,13 +514,18 @@ impl App {
             }
             table = table.push(values);
         }
-        detail = detail.push(scrollable(table).horizontal().spacing(4).width(Fill));
+        detail = detail.push(
+            scrollable(table)
+                .horizontal()
+                .spacing(theme::ITEM_GAP)
+                .width(Fill),
+        );
         if track.analysis.as_ref().is_some_and(|a| {
             a.number("sound_quality").is_none() && a.sound_quality_error().is_none()
         }) {
             detail = detail.push(
                 text("Reanalyze to calculate missing Professionality scores.")
-                    .size(11)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             );
         }
@@ -531,28 +535,23 @@ impl App {
                 format!("Reference: {name}"),
                 job.and_then(|j| j.config.reference_audio.as_ref())
                     .map_or(name.clone(), |p| p.display().to_string()),
-                12.,
+                theme::SMALL_TEXT,
                 true,
             ));
         }
-        let mut tabs = row![].spacing(4);
+        let mut tabs = row![].spacing(theme::ITEM_GAP);
         for kind in plots::Kind::ALL {
             tabs = tabs.push(
-                button(
-                    text(kind.to_string())
-                        .size(12)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                )
-                .padding(5)
-                .style(if self.graph == kind {
-                    theme::selected
-                } else {
-                    theme::normal
-                })
-                .on_press(Message::Graph(kind)),
+                button(text(kind.to_string()).wrapping(iced::widget::text::Wrapping::WordOrGlyph))
+                    .style(if self.graph == kind {
+                        theme::selected
+                    } else {
+                        theme::normal
+                    })
+                    .on_press(Message::Graph(kind)),
             );
         }
-        detail = detail.push(tabs);
+        detail = detail.push(tabs.wrap());
         if self.graph == plots::Kind::Distribution {
             for (label, analysis) in [
                 (self.comparison_label(), self.comparison_analysis()),
@@ -565,13 +564,13 @@ impl App {
                     .filter(|p| p.is_file())
                 {
                     detail = detail
-                        .push(compact_text(label.clone(), label, 12., false))
+                        .push(compact_text(label.clone(), label, theme::SMALL_TEXT, false))
                         .push(iced::widget::image(path).width(Fill));
                 }
             }
             detail = detail.push(
                 text("Distribution images require analysis generated with this application.")
-                    .size(11)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             );
         } else {
@@ -594,7 +593,7 @@ impl App {
                             ""
                         }
                     ))
-                    .size(11)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 )
                 .push(
@@ -617,7 +616,7 @@ impl App {
                         plots::Kind::Loudness => "Time (s) / loudness (dB)",
                         _ => "Loudness (dB) / frequency",
                     })
-                    .size(11)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 );
         }
@@ -644,20 +643,19 @@ impl App {
     }
 
     fn processing_details<'a>(&'a self, job: &'a Job) -> Element<'a, Message> {
-        let mut details = column![text(format!("Status: {}", job.status)).size(13).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            text(config_summary(&job.config)).size(12).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+        let mut details = column![text(format!("Status: {}", job.status)).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            text(config_summary(&job.config)).size(theme::SMALL_TEXT).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             text(format!("Reference mode: {} · Peak: {} · Lowpass: {} Hz\nCuts: {}–{} Hz · Oversampling: {}\nIterations: {} / {} · Noise: {}\n{} · Seed {} · Evaluations {} · Workers {}\nBass: {} · Pre-compression: {}\nOutput: {} Hz / {} / {} bit",
                 job.config.reference_mode, job.config.ceiling_mode, job.config.lowpass_cut,
                 job.config.low_cut, job.config.high_cut, job.config.oversample, job.config.max_iter1, job.config.max_iter2,
                 job.config.noise_mode, job.config.solver, job.config.seed, job.config.evaluations, job.config.workers,
-                job.config.preserve_bass, job.config.pre_compression, job.config.sample_rate, job.config.format, job.config.bit_depth)).size(12).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-        ].spacing(6);
+                job.config.preserve_bass, job.config.pre_compression, job.config.sample_rate, job.config.format, job.config.bit_depth)).size(theme::SMALL_TEXT).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+        ].spacing(theme::SECTION_GAP);
         let image = job.output.with_extension("limiting-error.png");
         if image.is_file() {
             details = details
                 .push(
                     text("Limiting-error spectrogram")
-                        .size(13)
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 )
                 .push(iced::widget::image(image).width(Fill));
@@ -667,35 +665,28 @@ impl App {
                 .push(
                     row![
                         text("Executed command")
-                            .size(13)
                             .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                        button("Copy command")
-                            .on_press(Message::CopyCommand(job.id))
-                            .padding(3)
+                        button("Copy command").on_press(Message::CopyCommand(job.id))
                     ]
-                    .spacing(8),
+                    .spacing(theme::SECTION_GAP),
                 )
                 .push(
                     scrollable(
                         text(command)
-                            .size(12)
+                            .size(theme::SMALL_TEXT)
                             .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                     )
-                    .spacing(4)
+                    .spacing(theme::ITEM_GAP)
                     .height(100),
                 );
         }
         details
             .push(
                 row![
-                    text("Backend log")
-                        .size(13)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                    button("Copy log")
-                        .on_press(Message::CopyLog(job.id))
-                        .padding(3),
+                    text("Backend log").wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    button("Copy log").on_press(Message::CopyLog(job.id)),
                 ]
-                .spacing(8)
+                .spacing(theme::SECTION_GAP)
                 .align_y(iced::Center),
             )
             .push(
@@ -707,10 +698,10 @@ impl App {
                             .collect::<Vec<_>>()
                             .join("\n"),
                     )
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 )
-                .spacing(4)
+                .spacing(theme::ITEM_GAP)
                 .height(160),
             )
             .into()
@@ -719,27 +710,27 @@ impl App {
     fn settings_panel(&self) -> Element<'_, Message> {
         let target = self.selected.map(|k| k.0);
         let track = self.library.tracks.iter().find(|t| Some(t.id) == target);
-        let mut fields = column![].spacing(8);
+        let mut fields = column![].spacing(theme::SECTION_GAP);
         if self.job().is_some() {
             fields = fields.push(
                 text("Changes from selected result")
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .color(theme::DISABLED_LABEL),
             );
         }
         fields = fields.push(self.mastering_settings_view());
         let panel = column![
-            text("Mastering settings").size(15),
+            text("Mastering settings").size(theme::HEADING_TEXT),
             scrollable(fields.padding(iced::Padding {
                 bottom: 10.,
                 ..iced::Padding::ZERO
             }))
             .id("mastering-fields")
-            .spacing(4)
+            .spacing(theme::ITEM_GAP)
             .height(Fill)
             .width(Fill),
         ]
-        .spacing(8)
+        .spacing(theme::SECTION_GAP)
         .height(Fill);
         let issue = self.settings_issue().or_else(|| {
             if track.is_none() {
@@ -752,15 +743,9 @@ impl App {
         });
         panel
             .push(
-                button(text(self.variation_label()).size(if self.active.is_some() {
-                    13
-                } else {
-                    16
-                }))
-                .on_press_maybe(issue.is_none().then_some(Message::Master))
-                .width(Fill)
-                .height(40)
-                .padding(9),
+                button(text(self.variation_label()))
+                    .on_press_maybe(issue.is_none().then_some(Message::Master))
+                    .width(Fill),
             )
             .into()
     }
@@ -788,9 +773,7 @@ impl App {
             _ => "Target level (dBFS)",
         };
         let loudness = column![
-            text("Loudness")
-                .size(14)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            text("Loudness").wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             self.explained(
                 "Level measurement",
                 Topic::ReferenceMode,
@@ -804,12 +787,10 @@ impl App {
             ),
             self.numeric(target_label, Field::Loudness),
         ]
-        .spacing(7)
+        .spacing(theme::SECTION_GAP)
         .width(Fill);
         let peak = column![
-            text("Peak")
-                .size(14)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            text("Peak").wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             self.explained(
                 "Peak measurement",
                 Topic::CeilingMode,
@@ -824,12 +805,12 @@ impl App {
             self.numeric("Ceiling (dBFS)", Field::Ceiling),
             self.numeric("Lowpass true-peak frequency (Hz)", Field::LowpassCut),
         ]
-        .spacing(7)
+        .spacing(theme::SECTION_GAP)
         .width(Fill);
-        let primary = column![loudness, rule::horizontal(1), peak].spacing(7);
+        let primary = column![loudness, rule::horizontal(1), peak].spacing(theme::SECTION_GAP);
         let mut settings = column![
             text("Level & limiter")
-                .size(15)
+                .size(theme::HEADING_TEXT)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             primary,
             button(text(self.changed_group_label(
@@ -845,10 +826,9 @@ impl App {
                 ]
             )))
             .on_press(Message::ToggleLimiterDetails)
-            .padding(4)
             .style(theme::normal),
         ]
-        .spacing(7);
+        .spacing(theme::SECTION_GAP);
         if self.show_limiter_details {
             settings = settings.push(
                 column![
@@ -875,11 +855,9 @@ impl App {
                         self.numeric("Outer iterations", Field::MaxIter1),
                         self.numeric("Inner iterations", Field::MaxIter2)
                     ]
-                    .spacing(8),
+                    .spacing(theme::SECTION_GAP),
                     rule::horizontal(1),
-                    text("Pre-compression")
-                        .size(14)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    text("Pre-compression").wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                     self.explained_toggle(
                         Topic::PreCompression,
                         (checkbox(self.library.draft.pre_compression)
@@ -888,14 +866,14 @@ impl App {
                         .into()
                     ),
                 ]
-                .spacing(7),
+                .spacing(theme::SECTION_GAP),
             );
         }
         settings = settings
             .push(rule::horizontal(1))
             .push(
                 text("Automatic mastering")
-                    .size(15)
+                    .size(theme::HEADING_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             )
             .push(
@@ -927,7 +905,6 @@ impl App {
                     &["Solver", "Evaluations", "Seed"],
                 )))
                 .on_press(Message::ToggleOptimization)
-                .padding(4)
                 .style(theme::normal),
             );
         if self.show_optimization {
@@ -947,16 +924,16 @@ impl App {
                         self.numeric("Evaluations", Field::Evaluations),
                         self.numeric("Seed", Field::Seed)
                     ]
-                    .spacing(8),
+                    .spacing(theme::SECTION_GAP),
                 ]
-                .spacing(7),
+                .spacing(theme::SECTION_GAP),
             );
         }
         settings
             .push(rule::horizontal(1))
             .push(
                 text("Band limits")
-                    .size(15)
+                    .size(theme::HEADING_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             )
             .push(
@@ -964,12 +941,12 @@ impl App {
                     self.numeric("Low cut (Hz)", Field::LowCut),
                     self.numeric("High cut (Hz)", Field::HighCut)
                 ]
-                .spacing(8),
+                .spacing(theme::SECTION_GAP),
             )
             .push(rule::horizontal(1))
             .push(
                 text("Output")
-                    .size(15)
+                    .size(theme::HEADING_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             )
             .push(
@@ -994,12 +971,12 @@ impl App {
                     ),
                     self.numeric_choice("WAV bits (32: float)", Field::BitDepth, &[16, 24, 32]),
                 ]
-                .spacing(8),
+                .spacing(theme::SECTION_GAP),
             )
             .push(rule::horizontal(1))
             .push(
                 text("Execution")
-                    .size(15)
+                    .size(theme::HEADING_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             )
             .push(self.numeric("Workers (0: auto, max: 32)", Field::Workers))
@@ -1009,7 +986,7 @@ impl App {
 
 fn numeric_cell<'a>(value: String, width: f32) -> Element<'a, Message> {
     text(value)
-        .size(12)
+        .size(theme::SMALL_TEXT)
         .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
         .font(iced::Font::MONOSPACE)
         .width(width)
@@ -1124,7 +1101,7 @@ fn compact_text<'a>(value: String, full: String, size: f32, middle: bool) -> Ele
                     } else {
                         format!("{value}\n{full}")
                     })
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .width(Fill),
                 )
@@ -1138,7 +1115,11 @@ fn compact_text<'a>(value: String, full: String, size: f32, middle: bool) -> Ele
         .snap_within_viewport(true)
         .into()
     })
-    .height(size * 1.3)
+    .height(
+        iced::widget::text::LineHeight::default()
+            .to_absolute(size.into())
+            .0,
+    )
     .into()
 }
 

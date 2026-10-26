@@ -1,5 +1,5 @@
 //! Passive workspace status and queue progress.
-use crate::{App, Element, Message, Status};
+use crate::{App, Element, Message, Status, theme};
 use iced::Fill;
 use iced::widget::{column, container, progress_bar, row, rule, text};
 
@@ -13,15 +13,15 @@ impl App {
             .iter()
             .filter(|j| j.status == Status::Waiting)
             .count();
-        let mut footer = row![].spacing(8).align_y(iced::Center);
+        let mut footer = row![].spacing(theme::SECTION_GAP).align_y(iced::Center);
         if let Some(active) = &self.active
             && let Some(job) = self.library.jobs.iter().find(|j| j.id == active.id)
         {
             footer = footer
-                .push(text("Processing").size(12))
+                .push(text("Processing").size(theme::SMALL_TEXT))
                 .push(container(progress_bar(0.0..=1.0, job.progress).girth(5)).width(100));
         }
-        footer = footer.push(text(format!("{waiting} queued")).size(12));
+        footer = footer.push(text(format!("{waiting} queued")).size(theme::SMALL_TEXT));
         footer.into()
     }
 
@@ -103,7 +103,7 @@ impl App {
             .first()
             .map_or("Ready", |s| s.lines().next().unwrap_or("Error"));
         let label = text(summary.to_owned())
-            .size(12)
+            .size(theme::SMALL_TEXT)
             .color(if is_error {
                 crate::theme::ERROR
             } else {
@@ -116,7 +116,7 @@ impl App {
                 rule::vertical(1),
                 self.queue_view(),
             ]
-            .spacing(8)
+            .spacing(theme::SECTION_GAP)
             .align_y(iced::Center),
         )
         .padding([0, 10])

@@ -1,5 +1,5 @@
 //! On-demand diagnostic snapshots in an independent, read-only window.
-use crate::{App, Element, Message};
+use crate::{App, Element, Message, theme};
 use iced::widget::{button, column, container, row, space, text_editor};
 use iced::{Fill, Task, window};
 use serde_json::{Value, json};
@@ -68,24 +68,18 @@ impl App {
             column![
                 text_editor(&report.content)
                     .font(iced::Font::MONOSPACE)
-                    .size(12)
+                    .size(theme::SMALL_TEXT)
                     .height(Fill)
                     .on_action(|action| Message::Report(Event::Select(action))),
                 row![
-                    button("Copy report")
-                        .height(30)
-                        .on_press(Message::CopyText(report.content.text())),
-                    button("Refresh")
-                        .height(30)
-                        .on_press(Message::Report(Event::Refresh)),
+                    button("Copy report").on_press(Message::CopyText(report.content.text())),
+                    button("Refresh").on_press(Message::Report(Event::Refresh)),
                     space().width(Fill),
-                    button("Close")
-                        .height(30)
-                        .on_press(Message::Report(Event::Close)),
+                    button("Close").on_press(Message::Report(Event::Close)),
                 ]
-                .spacing(8),
+                .spacing(theme::SECTION_GAP),
             ]
-            .spacing(10),
+            .spacing(theme::SECTION_GAP),
         )
         .padding(12)
         .into()
