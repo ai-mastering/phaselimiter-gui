@@ -51,11 +51,8 @@ pub fn entry(
         recipe["quality2"] = json!({"hash":library::hash(quality_cache)?, "archiver":"binary"});
     }
     if options.detect2 {
-        let detector = backend.with_file_name(if cfg!(windows) {
-            "audio_detector.exe"
-        } else {
-            "audio_detector"
-        });
+        let detector =
+            backend.with_file_name(format!("audio_detector{}", std::env::consts::EXE_SUFFIX));
         let preparation = backend
             .parent()
             .and_then(Path::parent)
@@ -116,11 +113,7 @@ mod tests {
             let cache = dir.path().join("quality2");
             for path in [
                 &analysis::executable(&backend),
-                &backend.with_file_name(if cfg!(windows) {
-                    "audio_detector.exe"
-                } else {
-                    "audio_detector"
-                }),
+                &backend.with_file_name(format!("audio_detector{}", std::env::consts::EXE_SUFFIX)),
                 &ffmpeg,
                 &cache,
                 &dir.path().join("resource/analysis_data/a.json"),
@@ -158,11 +151,9 @@ mod tests {
         let reference = analysis::Options::REFERENCE;
         let mut previous = fixture.key(&full);
         let reference_key = fixture.key(&reference);
-        let detector = fixture.backend.with_file_name(if cfg!(windows) {
-            "audio_detector.exe"
-        } else {
-            "audio_detector"
-        });
+        let detector = fixture
+            .backend
+            .with_file_name(format!("audio_detector{}", std::env::consts::EXE_SUFFIX));
         for path in [
             &fixture.cache,
             &detector,

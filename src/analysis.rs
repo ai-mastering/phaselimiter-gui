@@ -159,11 +159,7 @@ impl Analysis {
 }
 
 pub fn executable(backend: &Path) -> PathBuf {
-    backend.with_file_name(if cfg!(windows) {
-        "audio_analyzer.exe"
-    } else {
-        "audio_analyzer"
-    })
+    backend.with_file_name(format!("audio_analyzer{}", std::env::consts::EXE_SUFFIX))
 }
 
 // The classic detect2 score uses short-window analysis and the prepared
@@ -180,11 +176,8 @@ async fn detect_sound_quality(
         .and_then(Path::parent)
         .ok_or("Cannot locate resource/detection_preparation.json beside the engine's bin folder.")?
         .join("resource/detection_preparation.json");
-    let executable = backend.with_file_name(if cfg!(windows) {
-        "audio_detector.exe"
-    } else {
-        "audio_detector"
-    });
+    let executable =
+        backend.with_file_name(format!("audio_detector{}", std::env::consts::EXE_SUFFIX));
     let mut command = tokio::process::Command::new(&executable);
     command
         .arg("detect2")

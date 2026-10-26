@@ -229,7 +229,7 @@ impl App {
             .style(if invalid {
                 theme::invalid_input
             } else {
-                theme::numeric_input
+                theme::input
             });
         if enabled {
             input = input

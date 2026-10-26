@@ -208,11 +208,7 @@ impl AppSettings {
         if self.backend.trim().is_empty() {
             bundled_root()
                 .join("phaselimiter/bin")
-                .join(if cfg!(windows) {
-                    "phase_limiter.exe"
-                } else {
-                    "phase_limiter"
-                })
+                .join(format!("phase_limiter{}", std::env::consts::EXE_SUFFIX))
         } else {
             PathBuf::from(&self.backend)
         }
@@ -221,11 +217,7 @@ impl AppSettings {
     pub fn ffmpeg_command(&self) -> String {
         if self.ffmpeg.trim().is_empty() {
             bundled_root()
-                .join(if cfg!(windows) {
-                    "ffmpeg.exe"
-                } else {
-                    "ffmpeg"
-                })
+                .join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX))
                 .to_string_lossy()
                 .into_owned()
         } else {

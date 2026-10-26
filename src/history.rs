@@ -22,28 +22,19 @@ impl App {
 
 /// Keep the on-disk audio key compatible; originals are no longer history selections.
 pub(crate) fn restore_selection(library: &crate::Library) -> Option<ResultKey> {
-    let valid = |job: &&crate::Job| library.tracks.iter().any(|track| track.id == job.track_id);
-    let selected = library.selected;
-    library
+    let jobs = library
         .jobs
         .iter()
-        .filter(valid)
+        .filter(|job| library.tracks.iter().any(|track| track.id == job.track_id));
+    let selected = library.selected;
+    jobs.clone()
         .find(|job| selected == Some((job.track_id, Some(job.id))))
         .or_else(|| {
-            library
-                .jobs
-                .iter()
-                .filter(valid)
+            jobs.clone()
                 .filter(|job| selected.is_some_and(|key| key.0 == job.track_id))
                 .max_by_key(|job| job.created_at)
         })
-        .or_else(|| {
-            library
-                .jobs
-                .iter()
-                .filter(valid)
-                .max_by_key(|job| job.created_at)
-        })
+        .or_else(|| jobs.max_by_key(|job| job.created_at))
         .map(|job| (job.track_id, job.id))
 }
 

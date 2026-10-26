@@ -101,7 +101,7 @@ fn button_style(status: button::Status, selected: bool) -> button::Style {
     }
 }
 
-fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
+pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
     let (edge, width) = match status {
         text_input::Status::Focused { .. } => (BLUE, 2.0),
         text_input::Status::Hovered => (BLUE, 1.0),
@@ -138,9 +138,6 @@ pub fn tooltip(_: &Theme) -> container::Style {
         },
         ..container::Style::default()
     }
-}
-pub fn numeric_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
-    input(theme, status)
 }
 pub fn invalid_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     text_input::Style {
@@ -253,7 +250,7 @@ fn seek(_: &Theme, status: slider::Status) -> slider::Style {
 
 fn scroll(_: &Theme, status: scrollable::Status) -> scrollable::Style {
     let mut style = scrollable::default(&iced::Theme::Light, status);
-    let (vertical, horizontal) = match status {
+    let (vertical_highlighted, horizontal_highlighted) = match status {
         scrollable::Status::Active { .. } => (false, false),
         scrollable::Status::Hovered {
             is_vertical_scrollbar_hovered,
@@ -273,24 +270,20 @@ fn scroll(_: &Theme, status: scrollable::Status) -> scrollable::Style {
         ),
     };
     for (rail, highlighted) in [
-        (&mut style.vertical_rail, vertical),
-        (&mut style.horizontal_rail, horizontal),
+        (&mut style.vertical_rail, vertical_highlighted),
+        (&mut style.horizontal_rail, horizontal_highlighted),
     ] {
         rail.background = Some(iced::color!(0xE0DED3).into());
         rail.border = border(iced::color!(0xC4C1B5), 1.0);
         rail.scroller.background = if highlighted {
             iced::color!(0xB4CBE8).into()
         } else {
-            vertical_fill()
+            vertical(iced::color!(0xF7F9FC), iced::color!(0xCAD4E3))
         };
         rail.scroller.border = border(if highlighted { BLUE } else { EDGE }, 1.0);
     }
     style.gap = Some(DESKTOP.into());
     style
-}
-
-fn vertical_fill() -> Background {
-    vertical(iced::color!(0xF7F9FC), iced::color!(0xCAD4E3))
 }
 
 fn progress(_: &Theme) -> progress_bar::Style {
