@@ -809,16 +809,14 @@ impl App {
             .push(self.intensity_control())
             .push(text("Reference").size(14))
             .push(
-                checkbox(
-                    self.library.draft.use_reference || !self.library.draft.reference.is_empty(),
-                )
-                .label("Use reference audio")
-                .on_toggle_maybe(
-                    self.library
-                        .draft
-                        .mastering
-                        .then_some(Message::ReferenceEnabled),
-                ),
+                checkbox(self.library.draft.use_reference)
+                    .label("Use reference audio")
+                    .on_toggle_maybe(
+                        self.library
+                            .draft
+                            .mastering
+                            .then_some(Message::ReferenceEnabled),
+                    ),
             )
             .push(self.reference_control())
             .push(

@@ -723,7 +723,6 @@ impl App {
                 }
                 self.numeric_errors.remove(&Field::Reference);
                 self.library.draft.use_reference = enabled;
-                self.library.draft.reference.clear();
                 self.invalidate_draft_reference(true);
 
                 save = true;
@@ -734,7 +733,6 @@ impl App {
                 }
                 self.numeric_errors.remove(&Field::Reference);
                 self.library.draft.reference_audio = path;
-                self.library.draft.reference.clear();
                 self.invalidate_draft_reference(false);
                 save = true;
             }
@@ -773,7 +771,6 @@ impl App {
                     && let Some(path) = path
                 {
                     self.library.draft.reference_audio = path.display().to_string();
-                    self.library.draft.reference.clear();
                     self.invalidate_draft_reference(true);
                     save = true;
                 }
@@ -885,19 +882,6 @@ impl App {
                     self.error =
                         Some("Cancel the active mastering before removing this audio.".into());
                 } else {
-                    if key.1.is_none()
-                        && let Some(track) = self.library.tracks.iter().find(|t| t.id == key.0)
-                    {
-                        let reference = track
-                            .analysis
-                            .as_ref()
-                            .and_then(|a| a.path())
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_default();
-                        if self.library.draft.reference == reference {
-                            self.library.draft.reference.clear();
-                        }
-                    }
                     let removed_jobs: Vec<_> = self
                         .library
                         .jobs
@@ -1299,7 +1283,7 @@ impl App {
             Field::Workers => &self.library.draft.workers,
             Field::Evaluations => &self.library.draft.evaluations,
             Field::Seed => &self.library.draft.seed,
-            Field::Reference => &self.library.draft.reference,
+            Field::Reference => &self.library.draft.reference_audio,
         }
     }
     fn field_mut(&mut self, field: Field) -> &mut String {
@@ -1322,7 +1306,7 @@ impl App {
             Field::Workers => &mut self.library.draft.workers,
             Field::Evaluations => &mut self.library.draft.evaluations,
             Field::Seed => &mut self.library.draft.seed,
-            Field::Reference => &mut self.library.draft.reference,
+            Field::Reference => &mut self.library.draft.reference_audio,
         }
     }
 }
@@ -1370,12 +1354,6 @@ fn settings_from_config(c: &model::Config) -> Settings {
         reference_audio: c
             .reference_audio
             .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-        reference: c
-            .reference
-            .as_ref()
-            .filter(|_| c.reference_audio.is_none())
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
     }
@@ -1461,7 +1439,6 @@ mod tests {
         let mut app = app_with_track(dir.path());
         app.library.draft.use_reference = true;
         app.library.draft.reference_audio = "missing reference.wav".into();
-        app.library.draft.reference = "missing report.json".into();
         app.invalidate_draft_reference(true);
         assert!(!app.reference_ready());
         let _ = app.update(Message::Mastering(false));
@@ -2128,7 +2105,6 @@ mod tests {
         let restored = settings_from_config(&job.config);
         assert!(restored.use_reference);
         assert_eq!(restored.reference_audio, source.display().to_string());
-        assert!(restored.reference.is_empty());
         app.library.draft = restored.clone();
         app.library.jobs.clear();
         assert_eq!(
@@ -2159,6 +2135,17 @@ mod tests {
         assert!(!ui.into_messages().any(|m| matches!(m, Message::Master)));
     }
 
+    fn prepare_test_reference(app: &mut App, root: &std::path::Path, report: PathBuf) {
+        let source = root.join("reference.wav");
+        std::fs::write(&source, b"reference audio").unwrap();
+        app.library.draft.use_reference = true;
+        app.library.draft.reference_audio = source.display().to_string();
+        app.draft_reference.report = Some(Ok(reference::Prepared {
+            analysis: analysis::Analysis::read_report(report).unwrap(),
+            source_hash: library::hash(&source).unwrap(),
+        }));
+    }
+
     #[test]
     fn reference_loading_ignores_previous_selection_and_verifies_saved_reports() {
         let dir = tempfile::tempdir().unwrap();
@@ -2166,7 +2153,7 @@ mod tests {
         let report = analysis::Analysis::store(dir.path(), br#"{"loudness":-12}"#).unwrap();
         let path = report.path().unwrap().to_path_buf();
         app.library.tracks[0].analysis = Some(report);
-        app.library.draft.reference = path.display().to_string();
+        prepare_test_reference(&mut app, dir.path(), path.clone());
         app.queue_master().unwrap();
         app.running = false;
         let _ = app.update(Message::Select((
@@ -2207,7 +2194,7 @@ mod tests {
             .path()
             .unwrap()
             .to_path_buf();
-        app.library.draft.reference = report_path.display().to_string();
+        prepare_test_reference(&mut app, dir.path(), report_path.clone());
         app.queue_master().unwrap();
         let job = &app.library.jobs[0];
         assert_eq!(job.config.reference.as_ref().unwrap(), &report_path);
@@ -2218,8 +2205,13 @@ mod tests {
         .unwrap();
         std::fs::remove_dir_all(app.library.tracks[0].input.parent().unwrap()).unwrap();
         let _ = app.update(Message::Select((job.track_id, Some(job.id))));
-        app.queue_master().unwrap();
-        assert!(app.library.jobs[1].config.reference.is_some());
+        app.library.save(dir.path()).unwrap();
+        let restored = Library::load(dir.path()).unwrap();
+        assert_eq!(
+            restored.jobs[0].config.reference.as_ref(),
+            Some(&report_path)
+        );
+        assert!(analysis::Analysis::read_report(report_path).is_ok());
     }
     #[test]
     fn history_ui_selects_directly_without_a_comparison_list() {

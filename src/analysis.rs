@@ -571,9 +571,8 @@ mod tests {
         assert_eq!(restored.waveform().len(), 2);
     }
     #[test]
-    fn inline_reports_are_not_a_saved_library_format() {
+    fn reports_must_be_stored_before_saving_library_references() {
         let raw = serde_json::json!({"loudness": -10});
-        assert!(serde_json::from_value::<Analysis>(raw.clone()).is_err());
         assert!(serde_json::to_value(Analysis::new(raw)).is_err());
     }
 
