@@ -2,7 +2,8 @@
 //! Use visible borders and depth with iced 0.14 catalogs and standard styles.
 //!
 //! The standard button has no focus status; input/editor focus and persistent
-//! selections use blue borders. No custom widgets or drawing are involved.
+//! selections use blue borders. Resting surfaces are achromatic.
+//! No custom widgets or drawing are involved.
 use iced::widget::{
     button, checkbox, container, overlay::menu, pick_list, progress_bar, rule, scrollable, slider,
     text, text_editor, text_input,
@@ -12,12 +13,12 @@ use iced::{Background, Border, Color, Shadow, gradient};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Theme;
 
-const DESKTOP: Color = iced::color!(0xEAEAE7);
+const DESKTOP: Color = iced::color!(0xEAEAEA);
 const INK: Color = iced::color!(0x202020);
-const EDGE: Color = iced::color!(0x7F8C9D);
+const EDGE: Color = iced::color!(0x8B8B8B);
 const BLUE: Color = iced::color!(0x245DAD);
-const MUTED: Color = iced::color!(0x68685F);
-const DISABLED: Color = iced::color!(0xE2E0D5);
+const MUTED: Color = iced::color!(0x676767);
+const DISABLED: Color = iced::color!(0xE0E0E0);
 // Ordinary controls use iced defaults. Only secondary text and headings differ.
 pub const SMALL_TEXT: f32 = 12.;
 pub const HEADING_TEXT: f32 = 18.;
@@ -30,7 +31,7 @@ pub const ERROR: Color = iced::color!(0xA52D28);
 
 pub fn status_bar(_: &Theme) -> container::Style {
     container::Style {
-        background: Some(iced::color!(0xF0F0EE).into()),
+        background: Some(iced::color!(0xF0F0F0).into()),
         text_color: Some(INK),
         ..Default::default()
     }
@@ -91,13 +92,13 @@ pub fn selected(_: &Theme, status: button::Status) -> button::Style {
 
 fn button_style(status: button::Status, selected: bool) -> button::Style {
     let (top, bottom, edge, ink) = match status {
-        button::Status::Disabled => (DISABLED, DISABLED, iced::color!(0xAAA99F), MUTED),
+        button::Status::Disabled => (DISABLED, DISABLED, iced::color!(0xA9A9A9), MUTED),
         button::Status::Pressed => (iced::color!(0xB5C9E2), iced::color!(0xE0EAF5), BLUE, INK),
         button::Status::Hovered => (iced::color!(0xFFFAE8), iced::color!(0xEED9A1), BLUE, INK),
         button::Status::Active if selected => {
             (iced::color!(0xE2EDFC), iced::color!(0xACC9EF), BLUE, INK)
         }
-        button::Status::Active => (iced::color!(0xFFFFFF), iced::color!(0xDEDAC9), EDGE, INK),
+        button::Status::Active => (iced::color!(0xFFFFFF), iced::color!(0xDADADA), EDGE, INK),
     };
     button::Style {
         background: Some(vertical(top, bottom)),
@@ -186,14 +187,21 @@ fn check(_: &Theme, status: checkbox::Status) -> checkbox::Style {
         background: if disabled {
             DISABLED.into()
         } else {
-            vertical(iced::color!(0xE3E7EC), Color::WHITE)
+            vertical(iced::color!(0xE7E7E7), Color::WHITE)
         },
         icon_color: if disabled {
             MUTED
         } else {
             iced::color!(0x247333)
         },
-        border: border(if hovered || checked { BLUE } else { EDGE }, 1.0),
+        border: border(
+            if !disabled && (hovered || checked) {
+                BLUE
+            } else {
+                EDGE
+            },
+            1.0,
+        ),
         text_color: Some(if disabled { MUTED } else { INK }),
     }
 }
@@ -202,8 +210,12 @@ fn pick(_: &Theme, status: pick_list::Status) -> pick_list::Style {
     pick_list::Style {
         text_color: INK,
         placeholder_color: MUTED,
-        handle_color: BLUE,
-        background: vertical(Color::WHITE, iced::color!(0xE8E5D8)),
+        handle_color: if matches!(status, pick_list::Status::Active) {
+            INK
+        } else {
+            BLUE
+        },
+        background: vertical(Color::WHITE, iced::color!(0xE5E5E5)),
         border: border(
             if matches!(status, pick_list::Status::Active) {
                 EDGE
@@ -234,7 +246,10 @@ fn seek(_: &Theme, status: slider::Status) -> slider::Style {
     let active = matches!(status, slider::Status::Active);
     slider::Style {
         rail: slider::Rail {
-            backgrounds: (BLUE.into(), iced::color!(0xCCC9BD).into()),
+            backgrounds: (
+                if active { EDGE } else { BLUE }.into(),
+                iced::color!(0xC9C9C9).into(),
+            ),
             width: 4.0,
             border: border(EDGE, 1.0),
         },
@@ -246,7 +261,7 @@ fn seek(_: &Theme, status: slider::Status) -> slider::Style {
             background: if matches!(status, slider::Status::Dragged) {
                 iced::color!(0xACC9EF).into()
             } else {
-                vertical(Color::WHITE, iced::color!(0xD4DCCB))
+                vertical(Color::WHITE, iced::color!(0xD9D9D9))
             },
             border_width: 1.0,
             border_color: if active { EDGE } else { BLUE },
@@ -279,12 +294,12 @@ fn scroll(_: &Theme, status: scrollable::Status) -> scrollable::Style {
         (&mut style.vertical_rail, vertical_highlighted),
         (&mut style.horizontal_rail, horizontal_highlighted),
     ] {
-        rail.background = Some(iced::color!(0xE0DED3).into());
-        rail.border = border(iced::color!(0xC4C1B5), 1.0);
+        rail.background = Some(iced::color!(0xDEDEDE).into());
+        rail.border = border(iced::color!(0xC1C1C1), 1.0);
         rail.scroller.background = if highlighted {
             iced::color!(0xB4CBE8).into()
         } else {
-            vertical(iced::color!(0xF7F9FC), iced::color!(0xCAD4E3))
+            vertical(iced::color!(0xF9F9F9), iced::color!(0xD3D3D3))
         };
         rail.scroller.border = border(if highlighted { BLUE } else { EDGE }, 1.0);
     }
@@ -295,7 +310,7 @@ fn scroll(_: &Theme, status: scrollable::Status) -> scrollable::Style {
 fn progress(_: &Theme) -> progress_bar::Style {
     progress_bar::Style {
         background: Color::WHITE.into(),
-        bar: vertical(iced::color!(0x9DCC72), iced::color!(0x458D36)),
+        bar: vertical(iced::color!(0xB5B5B5), iced::color!(0x787878)),
         border: border(EDGE, 1.0),
     }
 }
@@ -343,7 +358,7 @@ catalog!(progress_bar, progress);
 catalog!(container, container::transparent);
 catalog!(text, |_: &Theme| text::Style::default());
 catalog!(rule, |_: &Theme| rule::Style {
-    color: iced::color!(0xB7B3A5),
+    color: iced::color!(0xB3B3B3),
     ..rule::default(&iced::Theme::Light)
 });
 
