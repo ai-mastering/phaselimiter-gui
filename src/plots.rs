@@ -26,6 +26,43 @@ fn axis_label(value: f32, step: f32) -> String {
     format!("{value:.precision$}")
 }
 
+const FREQUENCY_TICKS: [f32; 10] = [
+    20., 50., 100., 200., 500., 1000., 2000., 5000., 10000., 20000.,
+];
+
+fn time_axis(min: f32, max: f32) -> (f32, f32, Vec<f32>) {
+    let step = ((max - min) / 4.).ceil().max(1.);
+    let lower = (min / step).floor() * step;
+    let upper = ((max / step).ceil() * step).max(lower + step);
+    let intervals = ((upper - lower) / step).round() as usize;
+    (
+        lower,
+        upper,
+        (0..=intervals).map(|i| lower + i as f32 * step).collect(),
+    )
+}
+
+fn frequency_label(hz: f32) -> String {
+    if hz >= 1000. {
+        format!("{:.0}k", hz / 1000.)
+    } else {
+        format!("{hz:.0}")
+    }
+}
+
+// Expand the range as well as the ticks so labels describe the plotted values.
+fn decibel_axis(min: f32, max: f32) -> (f32, f32, Vec<f32>) {
+    let step = (((max - min) / (8. * 12.)).ceil().max(1.)) * 12.;
+    let lower = (min / step).floor() * step;
+    let upper = ((max / step).ceil() * step).max(lower + step);
+    let intervals = ((upper - lower) / step).round() as usize;
+    (
+        lower,
+        upper,
+        (0..=intervals).map(|i| lower + i as f32 * step).collect(),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Spectrum,
@@ -57,6 +94,7 @@ pub struct Plot {
     pub reference: Series,
     pub waveform: bool,
     pub logarithmic: bool,
+    pub x_decibels: bool,
     pub position: f32,
     pub region: Option<(f32, f32)>,
 }
@@ -73,6 +111,7 @@ struct CachedPlot {
     reference: Series,
     waveform: bool,
     logarithmic: bool,
+    x_decibels: bool,
     geometry: canvas::Cache,
 }
 impl CachedPlot {
@@ -82,6 +121,7 @@ impl CachedPlot {
             && Arc::ptr_eq(&self.reference, &plot.reference)
             && self.waveform == plot.waveform
             && self.logarithmic == plot.logarithmic
+            && self.x_decibels == plot.x_decibels
     }
 }
 impl canvas::Program<Message, Theme> for Plot {
@@ -136,6 +176,7 @@ impl canvas::Program<Message, Theme> for Plot {
                 reference: self.reference.clone(),
                 waveform: self.waveform,
                 logarithmic: self.logarithmic,
+                x_decibels: self.x_decibels,
                 geometry: canvas::Cache::new(),
             });
         let base = entry.geometry.draw(renderer, bounds.size(), |frame| {
@@ -211,8 +252,42 @@ impl Plot {
                 (xmin, xmax, ymin, ymax)
             }
         };
-        let ylabels: Vec<_> = (0..=4)
-            .map(|i| axis_label(ymax - (ymax - ymin) * i as f32 / 4., (ymax - ymin) / 4.))
+        let (xmin, xmax, xticks) = if self.x_decibels {
+            decibel_axis(xmin, xmax)
+        } else if self.logarithmic {
+            (
+                20f32.log10(),
+                xmax.max(20000f32.log10()),
+                FREQUENCY_TICKS.iter().map(|hz| hz.log10()).collect(),
+            )
+        } else if !self.waveform {
+            time_axis(xmin, xmax)
+        } else {
+            (xmin, xmax, Vec::new())
+        };
+        let (ymin, ymax, yticks) = if !self.waveform && !self.x_decibels {
+            decibel_axis(ymin, ymax)
+        } else {
+            (
+                ymin,
+                ymax,
+                (0..=4)
+                    .map(|i| ymin + (ymax - ymin) * i as f32 / 4.)
+                    .collect(),
+            )
+        };
+        let ylabels: Vec<_> = yticks
+            .iter()
+            .map(|y| {
+                axis_label(
+                    *y,
+                    if !self.waveform && !self.x_decibels {
+                        12.
+                    } else {
+                        (ymax - ymin) / 4.
+                    },
+                )
+            })
             .collect();
         let margin = if self.waveform {
             0.
@@ -227,7 +302,7 @@ impl Plot {
         let top = if self.waveform { 8. } else { 12. };
         let h = (bounds.height - if self.waveform { 24. } else { 40. }).max(1.);
         for (i, label) in ylabels.iter().enumerate() {
-            let y = top + h * i as f32 / 4.;
+            let y = top + h * (1. - (yticks[i] - ymin) / (ymax - ymin).max(0.001));
             frame.stroke(
                 &Path::line(Point::new(margin, y), Point::new(margin + w, y)),
                 Stroke::default().with_color(Color::from_rgb8(218, 224, 232)),
@@ -241,21 +316,33 @@ impl Plot {
                     size: 10.into(),
                     ..Default::default()
                 });
-                let x = xmin + (xmax - xmin) * i as f32 / 4.;
+            }
+        }
+        if !self.waveform {
+            let mut last_label_x = f32::NEG_INFINITY;
+            for (i, &x) in xticks.iter().enumerate() {
+                let label_x = margin + w * (x - xmin) / (xmax - xmin).max(0.001);
+                if self.logarithmic
+                    && i != xticks.len() - 1
+                    && (label_x - last_label_x < 30.
+                        || w * (xticks[xticks.len() - 1] - x) / (xmax - xmin).max(0.001) < 30.)
+                {
+                    continue;
+                }
+                last_label_x = label_x;
                 frame.fill_text(canvas::Text {
-                    content: axis_label(
-                        if self.logarithmic { 10f32.powf(x) } else { x },
-                        if self.logarithmic {
-                            1.
-                        } else {
-                            (xmax - xmin) / 4.
-                        },
-                    ),
-                    position: Point::new(margin + w * i as f32 / 4., h + 20.),
-                    align_x: match i {
-                        0 => iced::alignment::Horizontal::Left,
-                        4 => iced::alignment::Horizontal::Right,
-                        _ => iced::alignment::Horizontal::Center,
+                    content: if self.logarithmic {
+                        frequency_label(FREQUENCY_TICKS[i])
+                    } else {
+                        format!("{x:.0}")
+                    },
+                    position: Point::new(label_x, h + 20.),
+                    align_x: if i == 0 {
+                        iced::alignment::Horizontal::Left
+                    } else if i == xticks.len() - 1 {
+                        iced::alignment::Horizontal::Right
+                    } else {
+                        iced::alignment::Horizontal::Center
                     }
                     .into(),
                     size: 10.into(),
@@ -301,9 +388,43 @@ mod tests {
             reference: crate::analysis::empty_series(),
             waveform: true,
             logarithmic: false,
+            x_decibels: false,
             position: 0.,
             region: None,
         }
+    }
+    #[test]
+    fn time_ticks_are_integers_even_for_short_audio() {
+        for (min, max) in [(0., 0.25), (0., 1.), (0., 123.), (0., 0.)] {
+            let (lower, upper, ticks) = time_axis(min, max);
+            assert!(lower <= min && upper >= max && upper > lower);
+            assert!(ticks.iter().all(|tick| tick.fract() == 0.));
+            assert!(ticks.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+        assert_eq!(frequency_label(1000.), "1k");
+        assert_eq!(frequency_label(20000.), "20k");
+    }
+    #[test]
+    fn decibel_ticks_cover_data_and_are_multiples_of_twelve() {
+        for (min, max) in [
+            (-100., -20.),
+            (-24., -10.),
+            (-60., 0.),
+            (0., 0.),
+            (-13., -13.),
+            (-500., 20.),
+        ] {
+            let (lower, upper, ticks) = decibel_axis(min, max);
+            assert!(lower <= min && upper >= max && upper > lower);
+            assert!(ticks.len() <= 10);
+            assert!(ticks.iter().all(|tick| tick % 12. == 0.));
+            assert_eq!(ticks.first(), Some(&lower));
+            assert_eq!(ticks.last(), Some(&upper));
+        }
+        assert_eq!(
+            decibel_axis(-100., -20.).2,
+            vec![-108., -96., -84., -72., -60., -48., -36., -24., -12.]
+        );
     }
     #[test]
     fn fractional_axis_ticks_remain_distinct() {
@@ -382,6 +503,7 @@ mod tests {
             for width in [280., 560.] {
                 let chart = Plot {
                     logarithmic,
+                    x_decibels: name == "histogram",
                     waveform,
                     ..plot(Arc::from(points.clone()))
                 };
