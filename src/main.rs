@@ -2133,6 +2133,36 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    fn workspace_chart_visual_review() {
+        let directory = std::env::var("CHART_REVIEW_DIR").expect("set CHART_REVIEW_DIR");
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_track(dir.path());
+        app.library.tracks[0].analysis = Some(analysis::Analysis::new(serde_json::json!({
+            "spectrum": [{"hz":20,"db":-100},{"hz":100,"db":-45},{"hz":1000,"db":-20},{"hz":24000,"db":-60}],
+            "loudness_time_series": [{"sec":0,"db":-24},{"sec":0.25,"db":-10},{"sec":0.5,"db":-18},{"sec":1,"db":-12}],
+            "histogram": [{"db":-60,"frequency":0},{"db":-24,"frequency":120000},{"db":-12,"frequency":240000},{"db":0,"frequency":0}],
+            "waveform": [0.0, 1.0, -1.0, 0.0]
+        })));
+        for kind in plots::Kind::ALL {
+            app.graph = kind;
+            for width in [850., 1280.] {
+                let mut ui = iced_test::Simulator::with_size(
+                    Default::default(),
+                    iced::Size::new(width, 900.),
+                    app.view(),
+                );
+                assert!(
+                    ui.snapshot(&theme::Theme)
+                        .unwrap()
+                        .matches_image(format!("{directory}/workspace-{kind}-{width}.png"))
+                        .unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn wide_workspace_exposes_analysis_and_new_settings_together() {
         let dir = tempfile::tempdir().unwrap();
         let app = app_with_track(dir.path());

@@ -264,6 +264,7 @@ impl App {
                 reference: analysis::empty_series(),
                 waveform: true,
                 logarithmic: false,
+                x_decibels: false,
                 position: (self.position / self.duration.max(0.001)) as f32,
                 region: self.region.map(|(a, b)| (
                     (a / self.duration.max(0.001)) as f32,
@@ -549,6 +550,7 @@ impl App {
                         reference: series(reference),
                         waveform: false,
                         logarithmic: self.graph == plots::Kind::Spectrum,
+                        x_decibels: self.graph == plots::Kind::Histogram,
                         position: 0.,
                         region: None,
                     })
