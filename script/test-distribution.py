@@ -35,7 +35,7 @@ def check_audio(ffmpeg, path, env):
     assert max(abs(v) for v in values) > 0.001, path
 
 
-def test(archive, backend):
+def test(archive, backend, source_archive=None):
     with tempfile.TemporaryDirectory(prefix='phaselimiter-package-') as temporary:
         root = Path(temporary) / '日本語 配布 🎵'
         root.mkdir()
@@ -51,14 +51,17 @@ def test(archive, backend):
         payload, = root.iterdir()
         stage = payload / 'Contents/Resources' if payload.suffix == '.app' else payload
         metadata = json.loads((stage / 'BUILD-INFO.json').read_text())
-        with tarfile.open(stage / metadata['source_archive']) as sources:
-            revision = sources.extractfile('backend/SOURCE-REVISION').read().decode().strip()
-            assert revision == metadata['backend']['revision']
-            for asset in metadata['sources'].values():
-                sources.getmember('downloads/' + asset['filename'])
-            for name in ('gui/script/build-audio.py', 'gui/script/build-ffmpeg.sh',
-                         'gui/packaging/README.md', 'backend/LICENSE'):
-                sources.getmember(name)
+        assert not (stage / metadata['source_archive']).exists(), 'Sources belong in a separate artifact'
+        assert metadata['source_archive'] in (stage / 'SOURCES.txt').read_text(encoding='utf-8')
+        if source_archive is not None:
+            with tarfile.open(source_archive) as sources:
+                revision = sources.extractfile('backend/SOURCE-REVISION').read().decode().strip()
+                assert revision == metadata['backend']['revision']
+                for asset in metadata['sources'].values():
+                    sources.getmember('downloads/' + asset['filename'])
+                for name in ('gui/script/build-audio.py', 'gui/script/build-ffmpeg.sh',
+                             'gui/packaging/README.md', 'backend/LICENSE'):
+                    sources.getmember(name)
         suffix = '.exe' if os.name == 'nt' else ''
         ffmpeg = stage / ('ffmpeg' + suffix)
         tool = stage / 'phaselimiter/bin' / ('phase_limiter' + suffix)
@@ -115,5 +118,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive', required=True, type=Path)
     parser.add_argument('--backend', default='build/audio/backend', type=Path)
+    parser.add_argument('--sources', type=Path, help='separate corresponding-source archive to validate')
     args = parser.parse_args()
-    test(args.archive.resolve(), args.backend.resolve())
+    test(args.archive.resolve(), args.backend.resolve(), args.sources)

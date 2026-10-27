@@ -217,10 +217,10 @@ jobs:
         timeout-minutes: 20
         run: python script/test-audio.py --phase cache
       - name: Package complete portable distribution
-        run: python script/package-distribution.py --target ${{ matrix.target }}
+        run: python script/package-distribution.py --target ${{ matrix.target }} ${{ runner.os == 'Linux' && '--sources' || '' }}
       - name: Test extracted distribution without development runtime paths
         run: |
-          python script/test-distribution.py --archive dist/${{ matrix.target }}/Phaselimiter-${{ matrix.target }}.${{ runner.os == 'Linux' && 'tar.gz' || 'zip' }}
+          python script/test-distribution.py --archive dist/${{ matrix.target }}/Phaselimiter-${{ matrix.target }}.${{ runner.os == 'Linux' && 'tar.gz' || 'zip' }} ${{ runner.os == 'Linux' && '--sources dist/x86_64-unknown-linux-gnu/Phaselimiter-sources.tar.gz' || '' }}
       - name: Packaged GUI real X11 file drop
         if: runner.os == 'Linux'
         run: xvfb-run -a python script/test-x11-drop.py dist/${{ matrix.target }}/Phaselimiter/phaselimiter-gui
@@ -231,6 +231,12 @@ jobs:
         with:
           name: phaselimiter-${{ matrix.target }}
           path: dist/${{ matrix.target }}/Phaselimiter-${{ matrix.target }}.*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: phaselimiter-corresponding-sources
+          path: dist/${{ matrix.target }}/Phaselimiter-sources.tar.gz
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()

@@ -39,7 +39,9 @@ Install a test-only FFmpeg with `libx264` on the host PATH (`apt install ffmpeg`
 
 # Source and license artifacts
 
-`package-distribution.py` always includes `Phaselimiter-sources.tar.gz` in each distribution: in `Phaselimiter.app/Contents/Resources` on macOS, and beside the GUI executable on Windows/Linux. Keep it with the application when redistributing; no separate source download is needed. The archive contains:
+Publish `Phaselimiter-sources.tar.gz` as a separate asset alongside all four binary archives in the same GitHub Release. The Linux packaging job uses `--sources` to produce this shared archive and uploads it as `phaselimiter-corresponding-sources`. Always pair artifacts from the same workflow run; Actions does not publish releases automatically. Keep the matching source asset available with the binaries when redistributing.
+
+Binary packages retain licenses, notices and `SOURCES.txt` with source retrieval instructions, but do not contain the source archive. To create it locally, add `--sources` to `package-distribution.py`; to validate it against a binary package, pass `--sources <path-to-Phaselimiter-sources.tar.gz>` to `test-distribution.py`. The source archive contains:
 
 - The exact backend and recursively pinned submodule sources, with `SOURCE-REVISION` identifying the snapshot.
 - Unmodified, checksum-verified dependency source archives (Boost, FFmpeg, LAME, zlib, libsndfile, libpng, libjpeg-turbo, oneTBB, OpenMP and LLVM CMake helpers), plus the Armadillo header package.

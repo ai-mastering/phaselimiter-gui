@@ -42,7 +42,7 @@ def notices(build, stage):
 
 
 def source_archive(build, destination):
-    """Bundle the pinned dependency sources and the build scripts with each release."""
+    """One Linux job publishes sources/build scripts for all four native builds."""
     with tarfile.open(destination, "w:gz") as archive:
         for asset in PINS["sources"].values():
             # A binary-cache hit skips the dependency build that normally
@@ -64,7 +64,7 @@ def source_archive(build, destination):
                         filter=lambda item: None if "__pycache__" in item.name else item)
 
 
-def package(build, target):
+def package(build, target, sources=False):
     stage = build.work / "stage"
     if stage.exists():
         shutil.rmtree(stage)
@@ -118,7 +118,13 @@ def package(build, target):
     shutil.copy2(ROOT / "LICENSE", resource / "LICENSE")
     run([sys.executable, ROOT / "script/third-party-licenses.py", target,
          resource / "THIRD_PARTY_LICENSES.txt"], cwd=ROOT)
-    source_archive(build, resource / "Phaselimiter-sources.tar.gz")
+    (resource / "SOURCES.txt").write_text(
+        "Corresponding sources and build instructions: Phaselimiter-sources.tar.gz\n"
+        "Download this separate asset from the same GitHub Release as this binary:\n"
+        "https://github.com/ai-mastering/phaselimiter-gui/releases\n"
+        "For CI builds, use phaselimiter-corresponding-sources from the same workflow run.\n"
+        "When redistributing, also provide the matching corresponding sources.\n",
+        encoding="utf-8")
     if build.is_mac:
         write_macos_plist(payload)
         run(["codesign", "--force", "--sign", "-", payload])
@@ -139,6 +145,8 @@ def package(build, target):
     else:
         with tarfile.open(archive, "w:gz") as output:
             output.add(payload, arcname=payload.name)
+    if sources:
+        source_archive(build, destination / "Phaselimiter-sources.tar.gz")
     print(archive)
 
 
@@ -146,8 +154,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True)
     parser.add_argument("--work", default="build/audio")
+    parser.add_argument("--sources", action="store_true")
     args = parser.parse_args()
-    package(Build(args.work, 2), args.target)
+    package(Build(args.work, 2), args.target, args.sources)
 
 
 if __name__ == "__main__":
