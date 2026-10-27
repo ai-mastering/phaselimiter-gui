@@ -149,7 +149,7 @@ def main():
         # The path field is immediately below the menu, at fixed scale/size.
         click(250, 55)
         subprocess.run(['xclip', '-selection', 'clipboard'],
-                       input=str(ROOT / 'samples/screenshot/Carefree.mp3'), text=True,
+                       input=str(ROOT / 'samples/screenshot/Goldberg-Variation-4.mp3'), text=True,
                        check=True, timeout=5)
         key('Control_L')
         press('v')
@@ -218,8 +218,6 @@ def main():
                 raise RuntimeError('PNG optimization changed the captured pixels')
         print(f'optipng: {original_size} -> {args.output.stat().st_size} bytes; pixels unchanged',
               flush=True)
-        shutil.copyfile(ROOT / 'samples/screenshot/CREDIT.txt',
-                        args.output.with_suffix('.credit.txt'))
         close(window)
         success = True
         print(f'Saved {args.output.resolve()}', flush=True)

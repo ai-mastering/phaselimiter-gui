@@ -1,0 +1,17 @@
+Open Goldberg Variations — Variatio 4 a 1 Clav.
+Composer: Johann Sebastian Bach
+Pianist: Kimiko Ishizaka
+Source: https://archive.org/details/The_Open_Goldberg_Variations-11823
+Audio: https://archive.org/download/The_Open_Goldberg_Variations-11823/Kimiko_Ishizaka_-_05_-_Variatio_4_a_1_Clav.mp3
+License: CC0 1.0 Universal (recording)
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Goldberg-Variation-4.mp3 is an approximately 20-second excerpt starting at
+00:20, copied without audio re-encoding; source metadata was removed.
+This provenance note is for traceability; attribution is not required.
+License verified from the source archive metadata on 2026-10-27.
+
+Original MP3 SHA-256:
+61d7df8675c77d84cb67df62e7284dd466d1865d0ca0b1dfeb91b175c0da7379
+Included MP3 SHA-256:
+31deea5a69a07a7899f80f5f62931717084275dd84ce5fef84b319e1941f9bac

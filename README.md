@@ -6,7 +6,6 @@ Adjust your sound, compare the result with the original, and export your finishe
 
 ![Phaselimiter on Linux with three mastering results, original and mastered audio analysis, and mastering settings](docs/images/workspace.png)
 
-*Sample: “Carefree” by Kevin MacLeod, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The screenshot uses a 20-second excerpt and its mastered results. [Source and credit](docs/images/workspace.credit.txt).*
 
 ## What you can do
 
@@ -304,9 +303,9 @@ python3 script/screenshot.py /absolute/path/to/phaselimiter-gui \
   --output docs/images/workspace.png
 ```
 
-The script saves a 1600 × 1000 PNG, runs `optipng -o2`, and checks that optimization leaves the pixels unchanged. It also copies the music credit beside the image as `workspace.credit.txt`. Without `--output`, files go to `build/screenshots/`. Allow time for all three masters; `--timeout` defaults to 1800 seconds per master. Successful runs remove temporary data; failures retain it and print the location of the application log and library.
+The script saves a 1600 × 1000 PNG, runs `optipng -o2`, and checks that optimization leaves the pixels unchanged. Without `--output`, files go to `build/screenshots/`. Allow time for all three masters; `--timeout` defaults to 1800 seconds per master. Successful runs remove temporary data; failures retain it and print the location of the application log and library.
 
-The included [sample](samples/screenshot/Carefree.mp3) is “Carefree” by Kevin MacLeod, excerpted from approximately 00:20 to 00:40 without re-encoding the original MP3. See [source, license, and checksums](samples/screenshot/CREDIT.txt). No download is needed when capturing. Retain the credit when publishing sample audio or screenshot materials; the music is licensed under CC BY 4.0, not the repository's MIT license.
+The included [sample](samples/screenshot/Goldberg-Variation-4.mp3) is a 20-second excerpt (approximately 00:20–00:40) of “Variatio 4 a 1 Clav.” from Kimiko Ishizaka’s Open Goldberg Variations. The recording is released under CC0 1.0; attribution is not required, including when redistributing the sample or screenshots. See [provenance and checksums](samples/screenshot/SOURCE.txt). No download is needed when capturing.
 
 ### Crash boundaries
 
