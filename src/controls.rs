@@ -263,11 +263,7 @@ impl App {
                         .unwrap_or_else(|| spec.hint()),
                 )
                 .size(theme::SMALL_TEXT)
-                .color(if invalid {
-                    theme::ERROR
-                } else {
-                    theme::DISABLED_LABEL
-                }),
+                .style(if invalid { theme::error } else { theme::muted }),
             );
         }
         if unfinished {
@@ -276,7 +272,7 @@ impl App {
                     "Unfinished input; current setting: {value}. Enter to restore."
                 ))
                 .size(theme::SMALL_TEXT)
-                .color(theme::DISABLED_LABEL),
+                .style(theme::muted),
             );
         }
         group(
@@ -313,7 +309,7 @@ impl App {
             col = col.push(
                 text("Choose a supported value.")
                     .size(theme::SMALL_TEXT)
-                    .color(theme::ERROR),
+                    .style(theme::error),
             );
         }
         group(
@@ -356,10 +352,10 @@ impl App {
             ),
             row![
                 bar,
-                text(format!("{value:.2}")).width(42).color(if enabled {
-                    theme::LABEL
+                text(format!("{value:.2}")).width(42).style(if enabled {
+                    theme::label
                 } else {
-                    theme::DISABLED_LABEL
+                    theme::muted
                 })
             ]
             .spacing(theme::SECTION_GAP)
@@ -370,7 +366,7 @@ impl App {
             content = content.push(
                 text("Use 0.00–1.00.")
                     .size(theme::SMALL_TEXT)
-                    .color(theme::ERROR),
+                    .style(theme::error),
             );
         }
         group(

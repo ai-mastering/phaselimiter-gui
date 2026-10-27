@@ -25,6 +25,12 @@ sudo apt-get install build-essential clang libclang-dev pkg-config libx11-dev li
 
 The devcontainer installs these, Rust, and the macOS cross-build tools. They are build tools; users of a packaged application do not need Rust.
 
+### Themes
+
+Choose **Tools → Options → Theme** to switch between **Clear controls** (the default) and iced’s built-in themes. Selection previews immediately in both windows. **OK** saves it for the next launch; **Cancel**, Escape or closing Options restores the saved theme. Older settings without a theme, and unknown theme names, use Clear controls.
+
+Widget styles, menus, help text and plots derive their colors from iced’s semantic palette; selected controls and progress use `primary`, errors use `danger`, and surfaces use matched background/text pairs. The theme wrapper accepts any `iced::Theme`, including custom extended palettes. Graph legends use matching color samples rather than fixed color names.
+
 ## Use
 
 1. Set **Mastering settings**, then click **Master audio…** to select one or more files, or drop audio files onto the window. To paste an absolute path, choose **File → Master audio from path…** and press Enter or click **Master**. Each file is copied independently and immediately queued with the settings and tools captured when submitted. Invalid settings block submission and display a reason.

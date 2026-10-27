@@ -579,20 +579,29 @@ impl App {
                         plots::Kind::Distribution => analysis::empty_series(),
                     })
                 };
+                let mut legend = row![].spacing(theme::SECTION_GAP);
+                for (index, label) in [
+                    self.comparison_label(),
+                    "Selected".into(),
+                    "Reference".into(),
+                ]
+                .into_iter()
+                .enumerate()
+                .take(if has_reference { 3 } else { 2 })
+                {
+                    legend = legend.push(
+                        row![
+                            text("━").style(move |theme: &Theme| iced::widget::text::Style {
+                                color: Some(plots::series_colors(theme)[index]),
+                            }),
+                            text(label).size(theme::SMALL_TEXT),
+                        ]
+                        .spacing(theme::ITEM_GAP)
+                        .align_y(iced::Center),
+                    );
+                }
                 detail = detail
-                    .push(
-                        text(format!(
-                            "Gray: {} · Blue: selected{}",
-                            self.comparison_label(),
-                            if has_reference {
-                                " · Orange: reference"
-                            } else {
-                                ""
-                            }
-                        ))
-                        .size(theme::SMALL_TEXT)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                    )
+                    .push(legend.wrap())
                     .push(
                         canvas(plots::Plot {
                             input: series(self.comparison_analysis()),

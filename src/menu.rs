@@ -12,8 +12,6 @@ const ROOTS: [(&str, char, f32, f32); 4] = [
     ("Tools", 't', 48., 238.),
     ("Playback", 'p', 72., 178.),
 ];
-const FACE: Color = iced::color!(0xF0F0F0);
-const HIGHLIGHT: Color = iced::color!(0x0A246A);
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -341,27 +339,27 @@ impl App {
                         .height(BAR_HEIGHT)
                         .center_y(BAR_HEIGHT)
                         .padding([0, 8])
-                        .style(move |_: &Theme| container::Style {
-                            background: highlighted.then_some(iced::color!(0xD4D0C8).into()),
-                            border: iced::Border {
-                                color: if highlighted {
-                                    iced::color!(0x808080)
-                                } else {
-                                    Color::TRANSPARENT
-                                },
-                                width: 1.,
-                                radius: 0.into(),
-                            },
-                            shadow: if highlighted && !pressed {
-                                iced::Shadow {
-                                    color: Color::WHITE,
-                                    offset: iced::Vector::new(-1., -1.),
-                                    blur_radius: 0.,
-                                }
+                        .style(move |theme: &Theme| {
+                            let p = theme.extended_palette();
+                            let pair = if pressed {
+                                p.primary.weak
                             } else {
-                                iced::Shadow::default()
-                            },
-                            ..Default::default()
+                                p.background.weak
+                            };
+                            container::Style {
+                                background: highlighted.then_some(pair.color.into()),
+                                text_color: highlighted.then_some(pair.text),
+                                border: iced::Border {
+                                    color: if highlighted {
+                                        p.secondary.base.color
+                                    } else {
+                                        Color::TRANSPARENT
+                                    },
+                                    width: 1.,
+                                    radius: 0.into(),
+                                },
+                                ..Default::default()
+                            }
                         }),
                 )
                 .on_press(Message::Menu(Event::Toggle(index)))
@@ -396,13 +394,6 @@ impl App {
             }
             let enabled = entry.command.is_some();
             let highlighted = enabled && self.menu.selected == Some(index);
-            let ink = if !enabled {
-                iced::color!(0x808080)
-            } else if highlighted {
-                Color::WHITE
-            } else {
-                crate::theme::LABEL
-            };
             let line = row![
                 text(if entry.checked { "✓" } else { "" })
                     .size(FONT_SIZE)
@@ -418,10 +409,19 @@ impl App {
                     .height(ITEM_HEIGHT)
                     .center_y(ITEM_HEIGHT)
                     .padding([0, 8])
-                    .style(move |_: &Theme| container::Style {
-                        text_color: Some(ink),
-                        background: highlighted.then_some(HIGHLIGHT.into()),
-                        ..Default::default()
+                    .style(move |theme: &Theme| {
+                        let p = theme.extended_palette();
+                        container::Style {
+                            text_color: Some(if !enabled {
+                                p.background.base.text.scale_alpha(0.6)
+                            } else if highlighted {
+                                p.primary.base.text
+                            } else {
+                                p.background.base.text
+                            }),
+                            background: highlighted.then_some(p.primary.base.color.into()),
+                            ..Default::default()
+                        }
                     }),
             )
             .on_press(Message::Menu(Event::Select(enabled.then_some(index))))
@@ -434,20 +434,7 @@ impl App {
             });
         }
         let offset: f32 = ROOTS[..open].iter().map(|root| root.2).sum();
-        let popup = opaque(container(items).style(|_: &Theme| container::Style {
-            background: Some(FACE.into()),
-            border: iced::Border {
-                color: iced::color!(0x808080),
-                width: 1.,
-                radius: 0.into(),
-            },
-            shadow: iced::Shadow {
-                color: Color::from_rgba8(0, 0, 0, 0.25),
-                offset: iced::Vector::new(2., 2.),
-                blur_radius: 0.,
-            },
-            ..Default::default()
-        }));
+        let popup = opaque(container(items).style(crate::theme::tooltip));
         let overlay: Element<'_, Message> = if let Some(position) = self.menu.context_position {
             let x = position.x.min(size.width - ROOTS[open].3 - 4.).max(0.);
             let y = position.y.min(size.height - popup_height - 4.).max(0.);
@@ -643,7 +630,7 @@ mod tests {
         assert_eq!(app.menu.open, Some(0));
         let mut ui = iced_test::simulator(app.view());
         if let Ok(directory) = std::env::var("LAYOUT_REVIEW_DIR") {
-            ui.snapshot(&Theme)
+            ui.snapshot(&Theme::default())
                 .unwrap()
                 .matches_image(format!("{directory}/menu.png"))
                 .unwrap();

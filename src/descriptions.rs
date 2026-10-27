@@ -150,10 +150,10 @@ impl App {
 
     pub(super) fn help_label(&self, label: &'static str, topic: Topic) -> Element<'_, Message> {
         row![
-            text(label).color(match topic {
+            text(label).style(match topic {
                 Topic::Field(field) if !crate::controls::enabled(field, &self.library.draft) =>
-                    theme::DISABLED_LABEL,
-                _ => theme::LABEL,
+                    theme::muted,
+                _ => theme::label,
             }),
             self.help_button(topic)
         ]
@@ -172,7 +172,7 @@ impl App {
                 control,
                 text(format!("• Previous: {previous}"))
                     .size(theme::SMALL_TEXT)
-                    .color(theme::DISABLED_LABEL)
+                    .style(theme::muted)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             ]
             .spacing(theme::ITEM_GAP)
@@ -188,15 +188,7 @@ impl App {
             container(text(self.description(topic)).size(theme::SMALL_TEXT))
                 .padding(8)
                 .width(Fill)
-                .style(|_: &theme::Theme| iced::widget::container::Style {
-                    background: Some(iced::Color::from_rgb8(242, 246, 252).into()),
-                    border: iced::Border {
-                        color: theme::DISABLED_LABEL,
-                        width: 1.,
-                        radius: 3.into()
-                    },
-                    ..Default::default()
-                })
+                .style(theme::help)
         ]
         .spacing(theme::ITEM_GAP)
         .into()

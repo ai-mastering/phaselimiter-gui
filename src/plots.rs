@@ -5,10 +5,20 @@ use iced::widget::{
     Action,
     canvas::{self, Frame, Geometry, Path, Stroke},
 };
-use iced::{Color, Point, Rectangle, Renderer, mouse};
+use iced::{Point, Rectangle, Renderer, mouse};
 use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 const CACHE_ENTRIES: usize = 100;
+
+/// Comparison, selected result and reference share these colors with the legend.
+pub fn series_colors(theme: &Theme) -> [iced::Color; 3] {
+    let p = theme.extended_palette();
+    [
+        p.secondary.base.color,
+        p.primary.base.color,
+        p.warning.base.color,
+    ]
+}
 
 fn axis_label(value: f32, step: f32) -> String {
     let mut precision = if step > 0. {
@@ -156,6 +166,7 @@ pub struct State {
     builds: std::cell::Cell<usize>,
 }
 struct CachedPlot {
+    palette: iced::theme::palette::Extended,
     input: Series,
     output: Series,
     reference: Series,
@@ -165,8 +176,9 @@ struct CachedPlot {
     geometry: canvas::Cache,
 }
 impl CachedPlot {
-    fn matches(&self, plot: &Plot) -> bool {
-        Arc::ptr_eq(&self.input, &plot.input)
+    fn matches(&self, plot: &Plot, theme: &Theme) -> bool {
+        self.palette == *theme.extended_palette()
+            && Arc::ptr_eq(&self.input, &plot.input)
             && Arc::ptr_eq(&self.output, &plot.output)
             && Arc::ptr_eq(&self.reference, &plot.reference)
             && self.waveform == plot.waveform
@@ -211,16 +223,17 @@ impl canvas::Program<Message, Theme> for Plot {
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut cached = state.cached.borrow_mut();
         let entry = cached
             .iter()
-            .position(|entry| entry.matches(self))
+            .position(|entry| entry.matches(self, theme))
             .and_then(|index| cached.remove(index))
             .unwrap_or_else(|| CachedPlot {
+                palette: *theme.extended_palette(),
                 input: self.input.clone(),
                 output: self.output.clone(),
                 reference: self.reference.clone(),
@@ -235,9 +248,9 @@ impl canvas::Program<Message, Theme> for Plot {
             frame.fill_rectangle(
                 Point::ORIGIN,
                 bounds.size(),
-                Color::from_rgb8(245, 247, 250),
+                theme.extended_palette().background.base.color,
             );
-            self.draw_static(frame, bounds);
+            self.draw_static(frame, bounds, theme);
         });
         cached.push_back(entry);
         if cached.len() > CACHE_ENTRIES {
@@ -250,7 +263,12 @@ impl canvas::Program<Message, Theme> for Plot {
                 overlay.fill_rectangle(
                     Point::new(bounds.width * start, 0.),
                     iced::Size::new(bounds.width * (end - start), bounds.height),
-                    Color::from_rgba(0.2, 0.5, 0.9, 0.15),
+                    theme
+                        .extended_palette()
+                        .primary
+                        .base
+                        .color
+                        .scale_alpha(0.15),
                 );
             }
             overlay.stroke(
@@ -259,7 +277,7 @@ impl canvas::Program<Message, Theme> for Plot {
                     Point::new(bounds.width * self.position, bounds.height),
                 ),
                 Stroke::default()
-                    .with_color(Color::from_rgb8(20, 75, 170))
+                    .with_color(theme.extended_palette().primary.base.color)
                     .with_width(2.),
             );
             layers.push(overlay.into_geometry());
@@ -268,7 +286,8 @@ impl canvas::Program<Message, Theme> for Plot {
     }
 }
 impl Plot {
-    fn draw_static(&self, frame: &mut Frame, bounds: Rectangle) {
+    fn draw_static(&self, frame: &mut Frame, bounds: Rectangle, theme: &Theme) {
+        let p = theme.extended_palette();
         let transform = |x: f32| {
             if self.logarithmic {
                 x.max(20.).log10()
@@ -355,10 +374,11 @@ impl Plot {
             let y = top + h * (1. - (yticks[i] - ymin) / (ymax - ymin).max(0.001));
             frame.stroke(
                 &Path::line(Point::new(margin, y), Point::new(margin + w, y)),
-                Stroke::default().with_color(Color::from_rgb8(218, 224, 232)),
+                Stroke::default().with_color(p.background.strong.color),
             );
             if !self.waveform {
                 frame.fill_text(canvas::Text {
+                    color: p.background.base.text,
                     content: label.clone(),
                     position: Point::new(margin - 8., y),
                     align_x: iced::alignment::Horizontal::Right.into(),
@@ -381,6 +401,7 @@ impl Plot {
                 }
                 last_label_x = label_x;
                 frame.fill_text(canvas::Text {
+                    color: p.background.base.text,
                     content: if self.logarithmic {
                         frequency_label(FREQUENCY_TICKS[i])
                     } else {
@@ -400,11 +421,10 @@ impl Plot {
                 });
             }
         }
-        for (series, color) in [
-            (&self.input, Color::from_rgb8(125, 137, 152)),
-            (&self.output, Color::from_rgb8(35, 105, 210)),
-            (&self.reference, Color::from_rgb8(190, 120, 20)),
-        ] {
+        for (series, color) in [&self.input, &self.output, &self.reference]
+            .into_iter()
+            .zip(series_colors(theme))
+        {
             let path = Path::new(|builder| {
                 let mut first = true;
                 for &(x, y) in series.iter() {
@@ -496,7 +516,7 @@ mod tests {
                 plot,
                 &state,
                 &renderer,
-                &Theme,
+                &Theme::default(),
                 bounds,
                 mouse::Cursor::Unavailable,
             )
@@ -518,6 +538,25 @@ mod tests {
         assert_eq!(state.builds.get(), 4);
         draw(&a, bounds);
         assert_eq!(state.builds.get(), 4);
+        <Plot as canvas::Program<Message, Theme>>::draw(
+            &a,
+            &state,
+            &renderer,
+            &Theme::from(iced::Theme::Dark),
+            bounds,
+            mouse::Cursor::Unavailable,
+        );
+        assert_eq!(
+            state.builds.get(),
+            5,
+            "a new palette must redraw cached geometry"
+        );
+        draw(&a, bounds);
+        assert_eq!(
+            state.builds.get(),
+            5,
+            "returning to the old palette reuses its geometry"
+        );
     }
     // Render with the application's real canvas renderer for manual visual review.
     #[test]
@@ -565,7 +604,7 @@ mod tests {
                         .height(iced::Length::Fill),
                 );
                 assert!(
-                    ui.snapshot(&Theme)
+                    ui.snapshot(&Theme::default())
                         .unwrap()
                         .matches_image(format!("{directory}/{name}-{width}.png"))
                         .unwrap()
