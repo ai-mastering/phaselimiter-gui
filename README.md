@@ -180,6 +180,26 @@ cargo test --locked
 
 Tests cover configuration validation, output collisions, Unicode paths, argument handling, backend stdout/stderr, failure/cancellation, and headless GUI interactions. No backend installation or display server is needed for these tests.
 
+On Windows, install FFmpeg on PATH before `cargo test` (CI uses Chocolatey).
+The cancellation regression test compiles a small test backend with `rustc`,
+starts real FFmpeg beneath it, and checks that both processes exit after cancel.
+
+CI also explicitly runs all six ignored tests: three visual previews and save
+profiling on every platform, plus two ALSA playback tests on Linux. Preview PNGs
+and profiling output are uploaded as `gui-test-artifacts-<target>`. The previews
+are for human review, and profiling reports timings without a performance
+threshold. Profiling generates a temporary analyzed library by default; set
+`PHASELIMITER_PROFILE_LIBRARY` to use an existing library instead.
+
+To run all six locally on Linux (use a fresh output directory for new previews):
+
+```sh
+ALSA_CONFIG_PATH="$PWD/script/alsa-null.conf" \
+CHART_REVIEW_DIR="$PWD/build/test-artifacts/charts" \
+THEME_REVIEW_DIR="$PWD/build/test-artifacts/themes" \
+cargo test --locked -- --ignored --nocapture
+```
+
 For a real X11 file drop through the windowing protocol, install `xvfb xauth python3-xlib`, build the GUI, and run:
 
 ```sh

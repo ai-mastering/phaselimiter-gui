@@ -1983,11 +1983,28 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Local profiling with an existing analyzed library"]
+    #[ignore = "Profiling; CI uses generated data, local runs may supply an analyzed library"]
     fn profile_selection_save_cost() {
-        let source = std::env::var("PHASELIMITER_PROFILE_LIBRARY")
-            .expect("set PHASELIMITER_PROFILE_LIBRARY");
-        let original = Library::load(std::path::Path::new(&source)).unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let original = if let Some(source) = std::env::var_os("PHASELIMITER_PROFILE_LIBRARY") {
+            Library::load(std::path::Path::new(&source)).unwrap()
+        } else {
+            let mut app = app_with_track(fixture.path());
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "loudness": -12., "waveform": vec![0.25; 4096],
+            }))
+            .unwrap();
+            let report = analysis::Analysis::store(fixture.path(), &bytes).unwrap();
+            app.library.tracks[0].analysis = Some(report.clone());
+            for _ in 0..10 {
+                app.queue_master().unwrap();
+                let job = app.library.jobs.last_mut().unwrap();
+                job.status = Status::Succeeded;
+                job.analysis = Some(report.clone());
+                job.log = vec!["Processing audio".repeat(20); 100];
+            }
+            app.library
+        };
         let mut state = original.clone();
         for _ in 1..20 {
             let ids: std::collections::HashMap<_, _> = original
@@ -2018,6 +2035,9 @@ mod tests {
         worker.save(state.clone()).unwrap();
         let dispatch = start.elapsed();
         worker.flush().unwrap();
+        let restored = Library::load(dir.path()).unwrap();
+        assert_eq!(restored.tracks.len(), state.tracks.len());
+        assert_eq!(restored.jobs.len(), state.jobs.len());
         eprintln!(
             "PROFILE: {} inputs, {} results; synchronous save {:.2} ms; snapshot + background dispatch {:.3} ms",
             state.tracks.len(),

@@ -40,7 +40,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang libclang-dev nasm pkg-config patchelf ffmpeg optipng libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev xvfb xauth
+          sudo apt-get install -y build-essential clang libclang-dev nasm pkg-config patchelf ffmpeg optipng libasound2 libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev xvfb xauth
           python -m pip install python-xlib==0.33
       - name: macOS build tools (runner's official Xcode SDK)
         if: runner.os == 'macOS'
@@ -123,6 +123,28 @@ jobs:
         run: cargo fmt --check
       - name: GUI tests
         run: cargo test --locked
+      - name: GUI visual previews and save profiling
+        shell: bash
+        env:
+          CHART_REVIEW_DIR: ${{ github.workspace }}/build/test-artifacts/charts
+          THEME_REVIEW_DIR: ${{ github.workspace }}/build/test-artifacts/themes
+        run: |
+          mkdir -p build/test-artifacts
+          cargo test --locked visual_review -- --ignored --nocapture
+          cargo test --locked profile_selection_save_cost -- --ignored --nocapture 2>&1 | tee build/test-artifacts/save-profile.txt
+      - name: Linux playback with ALSA null device
+        if: runner.os == 'Linux'
+        env:
+          ALSA_CONFIG_PATH: ${{ github.workspace }}/script/alsa-null.conf
+        run: |
+          cargo test --locked device_callback_keeps_running_while_sources_switch -- --ignored --nocapture
+          cargo test --locked ab_buttons_play_pause_and_switch_with_a_prepared_device -- --ignored --nocapture
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-test-artifacts-${{ matrix.target }}
+          path: build/test-artifacts
+          if-no-files-found: error
       - name: GUI release build
         run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Save Rust cache before audio builds and integration tests

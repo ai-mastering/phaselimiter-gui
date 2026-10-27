@@ -116,6 +116,9 @@ pub fn progress(line: &str) -> Option<f32> {
 mod process_group;
 use process_group::ProcessGroup;
 
+#[cfg(all(test, windows))]
+mod windows_tests;
+
 pub fn run(job: Job, cancel: Arc<AtomicBool>) -> impl Stream<Item = Update> {
     iced::stream::channel(100, async move |mut sender| {
         let result = execute(&job, cancel, &mut sender).await;
