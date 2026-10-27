@@ -39,7 +39,7 @@ Install a test-only FFmpeg with `libx264` on the host PATH (`apt install ffmpeg`
 
 # Source and license artifacts
 
-Publish `Phaselimiter-sources.tar.gz` alongside all four binary archives. The Linux packaging step (`--sources`) produces this shared source archive with:
+`package-distribution.py` always includes `Phaselimiter-sources.tar.gz` in each distribution: in `Phaselimiter.app/Contents/Resources` on macOS, and beside the GUI executable on Windows/Linux. Keep it with the application when redistributing; no separate source download is needed. The archive contains:
 
 - The exact backend and recursively pinned submodule sources, with `SOURCE-REVISION` identifying the snapshot.
 - Unmodified, checksum-verified dependency source archives (Boost, FFmpeg, LAME, zlib, libsndfile, libpng, libjpeg-turbo, oneTBB, OpenMP and LLVM CMake helpers), plus the Armadillo header package.
@@ -48,3 +48,5 @@ Publish `Phaselimiter-sources.tar.gz` alongside all four binary archives. The Li
 To rebuild from that archive, extract it, use `gui/` as the repository, create `gui/build/audio/`, move `backend/` there and move `downloads/` there. The scripts accept the source snapshot's revision marker in place of `.git`. Run the native commands above. Rust crate sources are fetched according to Cargo.lock. IPP is a proprietary redistributable SDK: x86 builds retrieve the exact pinned Intel packages in the backend manifest; these and Apple's SDK are not placed in the source archive. Apple Silicon does not use IPP.
 
 Binary distributions contain GUI notices, backend notices, dependency licenses, the actual downloaded IPP license when applicable, and build/source metadata. FFmpeg's libraries, LAME, libsndfile and media helpers are linked statically into command-line tools; the supplied sources and build scripts allow rebuilding those tools with modified libraries. The GUI remains MIT and invokes the tools as separate processes. Keep notices and corresponding sources available when redistributing. Linux additionally ships the toolchain's libstdc++/libgcc_s with GCC runtime license/exception notices; its system glibc is not redistributed.
+
+The standalone `package-macos.py` and `package-windows.py` scripts package development GUIs only. They do not assemble corresponding sources for externally supplied audio tools. Use `package-distribution.py` for releases; do not pair a source archive from the current pins with older or separately built backend/FFmpeg binaries.

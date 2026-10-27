@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Test the extracted portable artifact, with SDK/runtime search paths removed."""
 import argparse
+import json
 import math
 import os
 from pathlib import Path
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import wave
 import zipfile
@@ -48,6 +50,15 @@ def test(archive, backend):
             extract_tar(archive, root)
         payload, = root.iterdir()
         stage = payload / 'Contents/Resources' if payload.suffix == '.app' else payload
+        metadata = json.loads((stage / 'BUILD-INFO.json').read_text())
+        with tarfile.open(stage / metadata['source_archive']) as sources:
+            revision = sources.extractfile('backend/SOURCE-REVISION').read().decode().strip()
+            assert revision == metadata['backend']['revision']
+            for asset in metadata['sources'].values():
+                sources.getmember('downloads/' + asset['filename'])
+            for name in ('gui/script/build-audio.py', 'gui/script/build-ffmpeg.sh',
+                         'gui/packaging/README.md', 'backend/LICENSE'):
+                sources.getmember(name)
         suffix = '.exe' if os.name == 'nt' else ''
         ffmpeg = stage / ('ffmpeg' + suffix)
         tool = stage / 'phaselimiter/bin' / ('phase_limiter' + suffix)
