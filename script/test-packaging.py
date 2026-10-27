@@ -236,11 +236,24 @@ class MacMetadata(unittest.TestCase):
 
 
 class LinuxDesktop(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('install_desktop', Path(__file__).with_name('install-desktop.py'))
+        self.installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.installer)
+
+    def test_exec_argument_quotes_linux_paths_on_every_host(self):
+        # No filesystem access: Linux filenames may contain characters that
+        # Windows cannot create, but quoting can still be checked on every OS.
+        path = '/tmp/日本語 audio %f $HOME `test` "quoted"/phaselimiter-gui'
+        self.assertEqual(
+            self.installer.exec_argument(path),
+            r'"/tmp/日本語 audio %%f \\$HOME \\`test\\` \\"quoted\\"/phaselimiter-gui"',
+        )
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Desktop registration requires Linux paths')
     def test_registration_uses_extracted_location_and_updates_after_move(self):
         import package_common
-        spec = importlib.util.spec_from_file_location('install_desktop', Path(__file__).with_name('install-desktop.py'))
-        installer = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(installer)
+        installer = self.installer
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bundle = root / '日本語 audio %f $HOME `test` "quoted"'
