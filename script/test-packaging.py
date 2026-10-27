@@ -191,9 +191,14 @@ class CorrespondingSources(unittest.TestCase):
             subprocess.run(['git', 'init', '-q', str(backend)], check=True)
             (backend / 'README.md').write_text('backend source')
             subprocess.run(['git', '-C', str(backend), 'add', 'README.md'], check=True)
+            # Package the source actually used, including local portability fixes.
+            (backend / 'README.md').write_text('backend source with local changes')
             gui = root / 'gui'
             for name in ('src', 'script', 'packaging', 'assets', '.cargo', '.github'):
                 (gui / name).mkdir(parents=True)
+            (gui / 'packaging/README.md').write_text('rebuild instructions')
+            (gui / 'script/build-audio.py').write_text('backend build recipe')
+            (gui / 'script/build-ffmpeg.sh').write_text('ffmpeg build recipe')
             (gui / 'assets/icon.png').write_bytes(b'icon fixture')
             (gui / 'build/icons').mkdir(parents=True)
             (gui / 'build/icons/phaselimiter.ico').write_bytes(b'generated icon')
@@ -208,6 +213,10 @@ class CorrespondingSources(unittest.TestCase):
             with tarfile.open(output) as archive:
                 self.assertEqual(archive.extractfile('downloads/' + source.name).read(), source.read_bytes())
                 self.assertEqual(archive.extractfile('backend/SOURCE-REVISION').read(), b'a' * 40 + b'\n')
+                self.assertEqual(archive.extractfile('backend/README.md').read(), b'backend source with local changes')
+                self.assertEqual(archive.extractfile('gui/packaging/README.md').read(), b'rebuild instructions')
+                self.assertEqual(archive.extractfile('gui/script/build-audio.py').read(), b'backend build recipe')
+                self.assertEqual(archive.extractfile('gui/script/build-ffmpeg.sh').read(), b'ffmpeg build recipe')
                 self.assertEqual(archive.extractfile('gui/build.rs').read(), b'source snapshot')
                 self.assertEqual(archive.extractfile('gui/assets/icon.png').read(), b'icon fixture')
                 self.assertNotIn('gui/build/icons/phaselimiter.ico', archive.getnames())
