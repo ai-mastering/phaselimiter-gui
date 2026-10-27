@@ -31,7 +31,7 @@ For the current app's complete distribution, choose the archive matching your sy
 | Windows 10 1903+ (64-bit x86) | `Phaselimiter-x86_64-pc-windows-msvc.zip` | `Phaselimiter/phaselimiter-gui.exe` |
 | macOS 14+ (Apple Silicon) | `Phaselimiter-aarch64-apple-darwin.zip` | `Phaselimiter.app` |
 | macOS 14+ (Intel) | `Phaselimiter-x86_64-apple-darwin.zip` | `Phaselimiter.app` |
-| Linux (64-bit x86) | `Phaselimiter-x86_64-unknown-linux-gnu.tar.gz` | `Phaselimiter/phaselimiter-gui` |
+| Linux (64-bit x86) | `Phaselimiter-x86_64-unknown-linux-gnu.tar.xz` | `Phaselimiter/phaselimiter-gui` |
 
 Extract the entire archive before opening the app. Keep the included tools and resources together. On macOS, you can move the `.app` into Applications. Current macOS packages are ad-hoc signed and are not notarized; see the release's startup instructions if macOS prevents opening them. Linux packages are built on Ubuntu 22.04 and need an X11 or Wayland desktop; exact glibc requirements are recorded in the archive's `runtime-versions.txt`.
 
@@ -268,7 +268,7 @@ GitHub Actions builds complete distributions on four native runners:
 
 | Target | Runner / baseline | Archive |
 | --- | --- | --- |
-| Linux x86-64 | Ubuntu 22.04; actual glibc requirements in `runtime-versions.txt` | `.tar.gz` |
+| Linux x86-64 | Ubuntu 22.04; actual glibc requirements in `runtime-versions.txt` | `.tar.xz` |
 | Windows x86-64 | Windows 2022; Windows 10 1903+ target | `.zip` |
 | Intel macOS | macOS 15 Intel; macOS 14+ target | `.app` in `.zip` |
 | Apple Silicon macOS | macOS 15 ARM64; macOS 14+ target | `.app` in `.zip` |

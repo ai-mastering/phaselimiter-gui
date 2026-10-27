@@ -3,6 +3,7 @@
 import argparse
 import io
 import json
+import lzma
 import os
 from pathlib import Path
 import shutil
@@ -43,7 +44,7 @@ def notices(build, stage):
 
 def source_archive(build, destination):
     """One Linux job publishes sources/build scripts for all four native builds."""
-    with tarfile.open(destination, "w:gz") as archive:
+    with tarfile.open(destination, "w:xz", preset=9 | lzma.PRESET_EXTREME) as archive:
         for asset in PINS["sources"].values():
             # A binary-cache hit skips the dependency build that normally
             # downloads these archives. Still publish all corresponding sources.
@@ -90,7 +91,7 @@ def package(build, target, sources=False):
         "cpu": "ARM64/NEON/Accelerate" if target.startswith("aarch64") else "x86-64/AVX/IPP",
         "minimum_os": "macOS 14" if build.is_mac else "Windows 10 1903" if build.is_windows else
                       "Linux x86-64 (glibc floor recorded in runtime-versions.txt)",
-        "source_archive": "Phaselimiter-sources.tar.gz",
+        "source_archive": "Phaselimiter-sources.tar.xz",
         "toolchain": {key: os.environ.get(key, "") for key in ["ImageVersion", "VCToolsVersion", "MACOSX_DEPLOYMENT_TARGET"]},
     }
     metadata["binary_sha256"] = {str(p.relative_to(stage)): digest(p)
@@ -119,10 +120,10 @@ def package(build, target, sources=False):
     run([sys.executable, ROOT / "script/third-party-licenses.py", target,
          resource / "THIRD_PARTY_LICENSES.txt"], cwd=ROOT)
     (resource / "SOURCES.txt").write_text(
-        "Corresponding sources and build instructions: Phaselimiter-sources.tar.gz\n"
+        "Corresponding sources and build instructions: Phaselimiter-sources.tar.xz\n"
         "Download this separate asset from the same GitHub Release as this binary:\n"
         "https://github.com/ai-mastering/phaselimiter-gui/releases\n"
-        "For CI builds, use phaselimiter-corresponding-sources from the same workflow run.\n"
+        "For CI builds, use Phaselimiter-sources.tar.xz from the same workflow run.\n"
         "When redistributing, also provide the matching corresponding sources.\n",
         encoding="utf-8")
     if build.is_mac:
@@ -139,14 +140,14 @@ def package(build, target, sources=False):
             output.write("\nphaselimiter-gui\n")
             output.flush()
             run(["readelf", "--version-info", executable_dir / gui.name], stdout=output)
-    archive = destination / ("Phaselimiter-" + target + (".zip" if build.is_mac or build.is_windows else ".tar.gz"))
+    archive = destination / ("Phaselimiter-" + target + (".zip" if build.is_mac or build.is_windows else ".tar.xz"))
     if archive.suffix == ".zip":
         zip_directory(archive, payload)
     else:
-        with tarfile.open(archive, "w:gz") as output:
+        with tarfile.open(archive, "w:xz", preset=9 | lzma.PRESET_EXTREME) as output:
             output.add(payload, arcname=payload.name)
     if sources:
-        source_archive(build, destination / "Phaselimiter-sources.tar.gz")
+        source_archive(build, destination / "Phaselimiter-sources.tar.xz")
     print(archive)
 
 

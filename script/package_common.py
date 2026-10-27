@@ -40,7 +40,7 @@ def write_macos_plist(app):
 
 
 def zip_directory(archive, directory):
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as output:
         for path in sorted(directory.rglob("*")):
             if path.is_file():
                 output.write(path, path.relative_to(directory.parent))

@@ -207,10 +207,10 @@ class CorrespondingSources(unittest.TestCase):
             pins = {'backend': {'revision': 'a' * 40}, 'sources': {'library': {
                 'filename': source.name, 'url': source.as_uri(), 'sha256': digest(source)}}}
             build = SimpleNamespace(downloads=root / 'empty-download-cache', backend=backend)
-            output = root / 'corresponding-sources.tar.gz'
+            output = root / 'corresponding-sources.tar.xz'
             with patch.object(distribution, 'PINS', pins), patch.object(distribution, 'ROOT', gui):
                 distribution.source_archive(build, output)
-            with tarfile.open(output) as archive:
+            with tarfile.open(output, 'r:xz') as archive:
                 self.assertEqual(archive.extractfile('downloads/' + source.name).read(), source.read_bytes())
                 self.assertEqual(archive.extractfile('backend/SOURCE-REVISION').read(), b'a' * 40 + b'\n')
                 self.assertEqual(archive.extractfile('backend/README.md').read(), b'backend source with local changes')

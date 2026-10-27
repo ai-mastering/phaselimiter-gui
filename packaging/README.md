@@ -18,7 +18,7 @@ python script/build-audio.py backend
 python script/test-audio.py
 cargo build --locked --release --target <rust-target>
 python script/package-distribution.py --target <rust-target>
-python script/test-distribution.py --archive dist/<rust-target>/Phaselimiter-<rust-target>.<zip-or-tar.gz>
+python script/test-distribution.py --archive dist/<rust-target>/Phaselimiter-<rust-target>.<zip-or-tar.xz>
 ```
 
 The default work directory is `build/audio`; each script accepts `--work` (the shell script takes the directory as its first argument). `BUILD_JOBS` defaults to 2 for hosted runners. For local backend builds, set it to your available CPU count. macOS builds target 14.0. GUI-only cross-build scripts remain separate and do not produce complete audio distributions.
@@ -39,9 +39,9 @@ Install a test-only FFmpeg with `libx264` on the host PATH (`apt install ffmpeg`
 
 # Source and license artifacts
 
-Publish `Phaselimiter-sources.tar.gz` as a separate asset alongside all four binary archives in the same GitHub Release. The Linux packaging job uses `--sources` to produce this shared archive and uploads it as `phaselimiter-corresponding-sources`. Always pair artifacts from the same workflow run; Actions does not publish releases automatically. Keep the matching source asset available with the binaries when redistributing.
+Publish `Phaselimiter-sources.tar.xz` as a separate asset alongside all four binary archives in the same GitHub Release. The Linux packaging job uses `--sources` to produce this shared archive and uploads it as `Phaselimiter-sources.tar.xz`. Distribution archives use maximum compression: xz preset 9 with extreme mode for Linux and corresponding sources, and Deflate level 9 for Windows/macOS ZIPs. Binary and source archives are uploaded as individual files without an extra ZIP wrapper; their Actions artifact names match their filenames. Always pair artifacts from the same workflow run; Actions does not publish releases automatically. Keep the matching source asset available with the binaries when redistributing.
 
-Binary packages retain licenses, notices and `SOURCES.txt` with source retrieval instructions, but do not contain the source archive. To create it locally, add `--sources` to `package-distribution.py`; to validate it against a binary package, pass `--sources <path-to-Phaselimiter-sources.tar.gz>` to `test-distribution.py`. The source archive contains:
+Binary packages retain licenses, notices and `SOURCES.txt` with source retrieval instructions, but do not contain the source archive. To create it locally, add `--sources` to `package-distribution.py`; to validate it against a binary package, pass `--sources <path-to-Phaselimiter-sources.tar.xz>` to `test-distribution.py`. The source archive contains:
 
 - The exact backend and recursively pinned submodule sources, with `SOURCE-REVISION` identifying the snapshot.
 - Unmodified, checksum-verified dependency source archives (Boost, FFmpeg, LAME, zlib, libsndfile, libpng, libjpeg-turbo, oneTBB, OpenMP and LLVM CMake helpers), plus the Armadillo header package.
