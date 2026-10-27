@@ -1,10 +1,65 @@
 # phaselimiter-gui
 
-A portable desktop frontend for [phaselimiter](https://github.com/ai-mastering/phaselimiter/tree/feature/win_build), the audio mastering engine used by bakuage.com / aimastering.com.
+Master audio locally on your desktop with [phaselimiter](https://github.com/ai-mastering/phaselimiter/tree/feature/win_build), the mastering engine used by bakuage.com / aimastering.com.
+
+Adjust your sound, compare the result with the original, and export your finished audio in one workspace. Available build targets are Windows, macOS, and Linux.
+
+![Phaselimiter on Linux with three mastering results, original and mastered audio analysis, and mastering settings](docs/images/workspace.png)
+
+*Sample: “Carefree” by Kevin MacLeod, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The screenshot uses a 20-second excerpt and its mastered results. [Source and credit](docs/images/workspace.credit.txt).*
+
+## What you can do
+
+- **Master your audio:** adjust loudness, peak control, tonal balance, and mastering intensity, or use a reference track.
+- **Hear the difference:** switch between the original and mastered audio with A/B playback. Match loudness for a comparison at a similar listening level.
+- **Explore variations:** try different settings while keeping earlier results in your history.
+- **See the results:** inspect waveforms, spectrum, loudness, and other audio measurements.
+- **Export your master:** save WAV, MP3, or AAC files.
+
+Audio processing runs locally on your computer. The complete distribution includes the mastering engine, FFmpeg, and analysis resources; you do not need to install Rust to use it.
+
+## Download and open
+
+Visit [GitHub Releases](https://github.com/ai-mastering/phaselimiter-gui/releases) for published downloads and version-specific instructions.
+
+**The current Rust desktop app is being prepared for release.** Existing releases are the earlier Go/GTK app and differ from the screenshot and instructions here. Until the new release is published, developers can use the [build instructions below](#build-and-run).
+
+For the current app's complete distribution, choose the archive matching your system:
+
+| System | Archive | Open after extracting |
+| --- | --- | --- |
+| Windows 10 1903+ (64-bit x86) | `Phaselimiter-x86_64-pc-windows-msvc.zip` | `Phaselimiter/phaselimiter-gui.exe` |
+| macOS 14+ (Apple Silicon) | `Phaselimiter-aarch64-apple-darwin.zip` | `Phaselimiter.app` |
+| macOS 14+ (Intel) | `Phaselimiter-x86_64-apple-darwin.zip` | `Phaselimiter.app` |
+| Linux (64-bit x86) | `Phaselimiter-x86_64-unknown-linux-gnu.tar.gz` | `Phaselimiter/phaselimiter-gui` |
+
+Extract the entire archive before opening the app. Keep the included tools and resources together. On macOS, you can move the `.app` into Applications. Current macOS packages are ad-hoc signed and are not notarized; see the release's startup instructions if macOS prevents opening them. Linux packages are built on Ubuntu 22.04 and need an X11 or Wayland desktop; exact glibc requirements are recorded in the archive's `runtime-versions.txt`.
+
+## Your first master
+
+1. **Choose settings.** Start with the defaults in **Mastering settings**, or adjust the target loudness and peak ceiling.
+2. **Add audio.** Click **Master audio…** or drop one or more audio files onto the window. Processing starts automatically; additional files wait in the queue.
+3. **Listen and compare.** Select a completed result in **Audio & history**, then click **A** to play the original or **B** to play your master. Switch between them while listening; click the playing side again to pause. Enable **Match loudness** to compare at a similar listening level.
+4. **Try another version.** Change the settings and click **Create variation**. It processes the original input again and keeps your earlier results. **Source A** can also select an earlier result from the same input.
+5. **Export.** Select the result you want and click **Export**. The app saves a copy in your export folder and shows its location in the status bar. Set the folder in **Tools → Options**. Existing files are preserved by adding a number to the new filename.
+
+Click the waveform to seek, or drag to loop a section while listening. Mastering always processes the whole input. To change the output format, choose it under **Mastering settings → Output** before creating a result.
+
+## History and preferences
+
+Your inputs, mastering results, and settings are saved automatically. Reopening the app restores your history; playback and the queue start stopped. Imported audio is copied into the app's storage, so your source files are not modified. History uses disk space until you remove results; exported copies remain separate.
+
+Use **Tools → Options** to choose an export folder or theme. The included tools work with empty path overrides. If processing fails, open **Processing details** for the log, or **Tools → Diagnostics** to copy a report when [reporting an issue](https://github.com/ai-mastering/phaselimiter-gui/issues).
+
+---
+
+## Development and detailed reference
+
+The sections below cover building from source, detailed behavior, packaging, and tests.
 
 The GUI uses Rust, iced 0.14 and the tiny-skia CPU renderer. It does not require GTK, Qt, a WebView or a GPU rendering API. Linux still uses X11/Wayland libraries. Audio processing runs locally in a separate backend process.
 
-## Build and run
+### Build and run
 
 Install Rust using [rustup](https://rustup.rs/). The repository pins its toolchain in `rust-toolchain.toml`.
 Install Python 3.10+ and optipng (`apt install optipng`, `brew install optipng`,
@@ -25,20 +80,20 @@ sudo apt-get install build-essential clang libclang-dev pkg-config libx11-dev li
 
 The devcontainer installs these, Rust, and the macOS cross-build tools. They are build tools; users of a packaged application do not need Rust.
 
-### Themes
+#### Themes
 
 Choose **Tools → Options → Theme** to switch between **Clear controls** (the default) and iced’s built-in themes. Selection previews immediately in both windows. **OK** saves it for the next launch; **Cancel**, Escape or closing Options restores the saved theme. Older settings without a theme, and unknown theme names, use Clear controls.
 
 Widget styles, menus, help text and plots derive their colors from iced’s semantic palette; selected controls and progress use `primary`, errors use `danger`, and surfaces use matched background/text pairs. The theme wrapper accepts any `iced::Theme`, including custom extended palettes. Graph legends use matching color samples rather than fixed color names.
 
-## Use
+### Use
 
 1. Set **Mastering settings**, then click **Master audio…** to select one or more files, or drop audio files onto the window. To paste an absolute path, choose **File → Master audio from path…** and press Enter or click **Master**. Each file is copied independently and immediately queued with the settings and tools captured when submitted. Invalid settings block submission and display a reason.
 2. **Audio & history** lists mastering results, including queued, running and failed attempts, newest first. Originals remain stored for analysis and A/B comparison but have no history rows. Select a result to listen, inspect its analysis and recall its settings. `audio_analyzer` is found beside the configured `phase_limiter` executable; FFmpeg converts compressed inputs to PCM WAV before analysis.
 3. Adjust the selected result's settings and click **Create variation**. This processes its original input again, creates another result, and preserves earlier results and the playback selection. Additional jobs wait behind the active run. A collapsible change count appears immediately above **Create variation**; expanding it scrolls to the differences in the settings area.
-4. Click a mastering result to switch playback at the same sample position with a 10 ms crossfade. Preparation of an uncached selection leaves the current audio playing. Originals and recent results are prepared in the background. Choose **Compare A** (original or another completed result of the same input), then use **A / B** to audition it against the selected result. The measurement table retains the original column and adds A and the saved reference when used. Spectrum, loudness and histogram graphs overlay A, B and reference; **Distribution** shows available frequency distribution images.
-5. Click the waveform to seek, or drag to loop a range. The range affects playback only; mastering always processes the whole input. **Match loudness** follows app.bakuage.com: it attenuates the louder member of the current A/B pair to match the quieter one, without amplifying either. A is the original or the selected **Compare A** result; B is the selected mastering result. Matching requires loudness measurements for both sides.
-6. Limiting error appears in the measurement table. Open **Processing details** for the exact settings, recorded execution command (with a copy button), limiting-error spectrogram and backend log. The log preview shows the most recent 400 lines; the complete log is retained in history and **Copy log** copies all retained lines. **Export a copy** beside the selected result opens the destination field; **Export** writes a copy. If the destination already exists, it adds a number before the extension (for example, `audio (1).wav`, `audio (2).wav`), choosing the first available filename without overwriting existing files.
+4. Click a mastering result to switch playback at the same sample position with a 10 ms crossfade. Preparation of an uncached selection leaves the current audio playing. Originals and recent results are prepared in the background. Choose **Source A** (original or another completed result of the same input), then use **A / B** to audition it against the selected result. The measurement table retains the original column and adds A and the saved reference when used. Spectrum, loudness and histogram graphs overlay A, B and reference; **Distribution** shows available frequency distribution images.
+5. Click the waveform to seek, or drag to loop a range. The range affects playback only; mastering always processes the whole input. **Match loudness** follows app.bakuage.com: it attenuates the louder member of the current A/B pair to match the quieter one, without amplifying either. A is the original or the selected **Source A** result; B is the selected mastering result. Matching requires loudness measurements for both sides.
+6. Limiting error appears in the measurement table. Open **Processing details** for the exact settings, recorded execution command (with a copy button), limiting-error spectrogram and backend log. The log preview shows the most recent 400 lines; the complete log is retained in history and **Copy log** copies all retained lines. **Export** beside the selected result writes a copy to the configured export directory and reports its location in the status bar. Set the directory in **Tools → Options**. If the destination already exists, it adds a number before the extension (for example, `audio (1).wav`, `audio (2).wav`), choosing the first available filename without overwriting existing files.
 
 The desktop workspace always shows history on the left, playback and analysis in the center, and mastering settings on the right. Resizing keeps this arrangement and the waveform visible; the center expands while the side panes retain their widths. The minimum window size is 1000 × 480 logical pixels. The Run button reserves 40 logical pixels; settings and expanded differences share one scroll area. Loudness and peak settings remain stacked. History is always visible. Scrollbars reserve their own layout space instead of overlaying controls or plots. The window-local **File / Edit / Tools / Playback** menu keeps application commands above the workspace. **Master audio…** stays at the top of history, with a persistent hint that audio files can be dropped anywhere in the main window. **Tools → Options** opens a separate modal dialog for engine paths, export location and storage information. **OK** saves the draft; **Cancel**, Esc and the dialog close button discard it. The parent workspace stays blocked while playback and background processing continue. Queued and running mastering jobs retain their captured settings. **Edit → Remove selected** removes the current history selection; right-clicking a history entry selects it and opens its context menu. F10 or Alt focuses the menu bar; Down opens it, and Alt+F/E/T/P opens a specific menu. Arrows navigate, Enter or a mnemonic activates an item, and Esc returns to the bar before leaving menu navigation. An outside click dismisses the menu. Ctrl+O selects new audio to master (Cmd+O also works on macOS). **Clear paths / use bundled tools** empties the draft engine, FFmpeg and cache overrides; press **OK** to apply. Each empty field resolves to the currently running application's bundled tool or resource at use time; a non-empty field must be an absolute path and is used exactly as specified. New settings store empty overrides rather than absolute bundle paths. Recalling a historical run preserves these application-level overrides. The bottom status bar collects errors, notices, import/analysis/playback preparation state and queue progress. The status bar is display-only; queue resume and cancellation are in **Tools**. **Tools → Diagnostics** opens an independent, nonmodal window with a JSON snapshot of current state, errors, selected/active job log tails (up to 200 lines each), and the audio log tail (up to 64 KiB). **Copy report** copies the entire snapshot; **Refresh** captures it again. Invalid inputs stay highlighted.
 
@@ -74,7 +129,7 @@ phaselimiter/
 
 `cargo build` builds the GUI only. The CI builds the complete layout, including backend libraries and licenses. The x86-64 backend requires AVX (Sandy Bridge or newer); Apple Silicon uses NEON and the system Accelerate framework.
 
-## Application icon
+### Application icon
 
 The window icon is embedded in the GUI. Windows builds also embed the icon in the
 executable; both macOS packagers include the icon in `Phaselimiter.app`.
@@ -103,7 +158,7 @@ are build dependencies only; application users do not need them. Windows
 cross-builds also require LLVM's `llvm-rc`; `script/build-windows.sh` locates it
 or honors `RC_PATH`.
 
-## Windows x86-64
+### Windows x86-64
 
 The GUI statically links the MSVC C runtime (`crt-static` in `.cargo/config.toml`). The CI builds the backend and its libraries with the static CRT too, and rejects unexpected Visual C++ runtime DLL imports. The complete distribution targets Windows 10 1903 or later, uses UTF-8 backend manifests, and includes required oneTBB/OpenMP DLLs. No separate Visual C++ Redistributable is intended to be necessary.
 
@@ -125,7 +180,7 @@ python3 script/analyze-windows.py target/x86_64-pc-windows-msvc/release/phaselim
 
 This inspects PE tables, not runtime `LoadLibrary` calls. Windows-native execution and D&D testing are separate from a successful Linux cross-build.
 
-## Intel Mac / Sonoma
+### Intel Mac / Sonoma
 
 Native build on your Mac, using Apple Xcode or Command Line Tools:
 
@@ -142,7 +197,7 @@ dist/x86_64-apple-darwin/Phaselimiter-macos.zip
 
 Open `Phaselimiter.app` on the Mac. This is an unsigned local build; no installer or App Store is involved. The macOS GUI backend defaults point to `Phaselimiter.app/Contents/Resources/phaselimiter/` and the sibling `ffmpeg`. You can instead enter external paths in the GUI.
 
-### Cross-build from the Linux devcontainer
+#### Cross-build from the Linux devcontainer
 
 Use an SDK installed by **Apple's official Xcode/Command Line Tools**. No SDK is downloaded by this repository's scripts. On your Mac, from this repository's directory:
 
@@ -168,7 +223,7 @@ Build and packaging scripts honor `CARGO_TARGET_DIR` and Cargo's configured targ
 
 A local cross-build cannot verify macOS windowing behavior; run the result on your Mac. Apple Silicon GUI builds can use `MACOS_TARGET=aarch64-apple-darwin`. The complete CI distribution builds and tests the ARM backend natively.
 
-## Tests and CI
+### Tests and CI
 
 ```sh
 python3 script/build-icons.py
@@ -222,12 +277,43 @@ Complete archive contents, native reproduction commands, CI caches and acceptanc
 
 GitHub Actions builds artifacts on pushes, pull requests and manual runs; it does not publish releases. Finder/Explorer and Wayland D&D are not automated.
 
-## License
+### Screenshots
 
-MIT; see [LICENSE](LICENSE). Dependencies retain their own licenses. This Rust port replaces the former Go/GTK frontend.
+Run [script/screenshot.py](script/screenshot.py) locally on Linux or in the devcontainer. It creates a private Xvfb display and temporary data/cache directories, masters the included sample three times with identical default settings and two workers, then captures the newest result with all three entries in history. Your usual library is untouched.
 
-## Crash boundaries
+Install the capture dependencies on Debian/Ubuntu:
+
+```sh
+sudo apt-get install xvfb xauth python3-xlib python3-pil xclip optipng
+```
+
+Pass the executable from an extracted complete Linux distribution:
+
+```sh
+python3 script/screenshot.py /absolute/path/to/Phaselimiter/phaselimiter-gui \
+  --output docs/images/workspace.png
+```
+
+For a locally built GUI, supply the tools explicitly. Use the executable under your `CARGO_TARGET_DIR` if set; the analyzer and detector must be beside `phase_limiter`, with their required resources installed:
+
+```sh
+python3 script/screenshot.py /absolute/path/to/phaselimiter-gui \
+  --backend /absolute/path/to/phaselimiter/bin/phase_limiter \
+  --ffmpeg /absolute/path/to/ffmpeg \
+  --cache /absolute/path/to/phaselimiter/resource/sound_quality2_cache \
+  --output docs/images/workspace.png
+```
+
+The script saves a 1600 × 1000 PNG, runs `optipng -o2`, and checks that optimization leaves the pixels unchanged. It also copies the music credit beside the image as `workspace.credit.txt`. Without `--output`, files go to `build/screenshots/`. Allow time for all three masters; `--timeout` defaults to 1800 seconds per master. Successful runs remove temporary data; failures retain it and print the location of the application log and library.
+
+The included [sample](samples/screenshot/Carefree.mp3) is “Carefree” by Kevin MacLeod, excerpted from approximately 00:20 to 00:40 without re-encoding the original MP3. See [source, license, and checksums](samples/screenshot/CREDIT.txt). No download is needed when capturing. Retain the credit when publishing sample audio or screenshot materials; the music is licensed under CC BY 4.0, not the repository's MIT license.
+
+### Crash boundaries
 
 Application code denies `unsafe`; the sole exception is the small Unix process-group cleanup module (`src/backend/process_group.rs`). Audio device ownership and callback setup are isolated in `src/playback/native.rs`. File errors, unavailable backends and audio worker creation failures are reported as errors. The callback only consumes PCM and atomics, and checks the sample format before typed access.
 
 Rust memory safety depends on the correctness of native libraries and dependency `unsafe` implementations. Native audio drivers and miniaudio still execute in the GUI process; their memory faults cannot be recovered with `Result` or `catch_unwind`. FFmpeg, the analyzer and the mastering engine run in child processes. Out-of-memory aborts and bugs in dependencies are not eliminated by these boundaries.
+
+## License
+
+MIT; see [LICENSE](LICENSE). Dependencies retain their own licenses. This Rust port replaces the former Go/GTK frontend.
