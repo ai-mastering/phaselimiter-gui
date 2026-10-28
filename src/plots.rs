@@ -271,14 +271,13 @@ impl canvas::Program<Message, Theme> for Plot {
                         .scale_alpha(0.15),
                 );
             }
-            overlay.stroke(
-                &Path::line(
-                    Point::new(bounds.width * self.position, 0.),
-                    Point::new(bounds.width * self.position, bounds.height),
-                ),
-                Stroke::default()
-                    .with_color(theme.extended_palette().primary.base.color)
-                    .with_width(2.),
+            // tiny-skia computes damage from path bounds without stroke width.
+            // A vertical stroke has zero-width bounds and its updates are discarded;
+            // a filled bar gives both the old and new positions a repaintable area.
+            overlay.fill_rectangle(
+                Point::new(bounds.width * self.position - 1., 0.),
+                iced::Size::new(2., bounds.height),
+                theme.extended_palette().primary.base.color,
             );
             layers.push(overlay.into_geometry());
         }
@@ -558,6 +557,64 @@ mod tests {
             "returning to the old palette reuses its geometry"
         );
     }
+    #[test]
+    fn playhead_damage_tracks_position_after_ab_switches() {
+        use iced::advanced::Renderer as _;
+        use iced::advanced::graphics::{damage, geometry::Renderer as _};
+
+        let mut renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(16.));
+        let state = State::default();
+        let bounds = Rectangle::with_size(iced::Size::new(800., 100.));
+        let a: Series = Arc::from([(0., 0.1), (1., -0.1)]);
+        let b: Series = Arc::from([(0., 0.2), (1., -0.2)]);
+        let mut previous: Option<(Vec<iced_tiny_skia::Layer>, f32)> = None;
+        // Exercise switching to B, playback ticks, and returning to cached A.
+        for (source, position) in [
+            (a.clone(), 0.1),
+            (b.clone(), 0.2),
+            (b, 0.3),
+            (a.clone(), 0.4),
+            (a, 0.5),
+        ] {
+            let chart = Plot {
+                position,
+                ..plot(source)
+            };
+            renderer.reset(bounds);
+            for geometry in <Plot as canvas::Program<Message, Theme>>::draw(
+                &chart,
+                &state,
+                &renderer,
+                &Theme::default(),
+                bounds,
+                mouse::Cursor::Unavailable,
+            ) {
+                renderer.draw_geometry(geometry);
+            }
+            let current = renderer.layers().to_vec();
+            if let Some((layers, old_position)) = previous {
+                let regions = damage::group(
+                    damage::diff(
+                        &layers,
+                        &current,
+                        |layer| vec![layer.bounds],
+                        iced_tiny_skia::Layer::damage,
+                    ),
+                    bounds,
+                );
+                for fraction in [old_position, position] {
+                    let point = Point::new(bounds.width * fraction, bounds.height / 2.);
+                    assert!(
+                        regions.iter().any(|region| region.contains(point)),
+                        "moving from {old_position} to {position} must repaint {point:?}: {regions:?}"
+                    );
+                }
+            }
+            previous = Some((current, position));
+        }
+        assert_eq!(state.builds.get(), 2, "static waveforms stay cached");
+    }
+
     // Render with the application's real canvas renderer for manual visual review.
     #[test]
     #[ignore]

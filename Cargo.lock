@@ -2386,6 +2386,7 @@ dependencies = [
  "fs2",
  "iced",
  "iced_test",
+ "iced_tiny_skia",
  "image",
  "libc",
  "objc2-foundation 0.3.2",
