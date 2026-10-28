@@ -1,6 +1,6 @@
 # phaselimiter-gui
 
-Master audio locally on your desktop with [phaselimiter](https://github.com/ai-mastering/phaselimiter/tree/feature/win_build), the mastering engine used by bakuage.com / aimastering.com.
+Master audio locally on your desktop with [phaselimiter](https://github.com/ai-mastering/phaselimiter/tree/master), the mastering engine used by bakuage.com / aimastering.com.
 
 Adjust your sound, compare the result with the original, and export your finished audio in one workspace. Available build targets are Windows, macOS, and Linux.
 

@@ -1,6 +1,6 @@
 # Native portable builds
 
-`.github/workflows/build.yml` is the executable reference for the four native environments. It builds LGPL FFmpeg (GPL/nonfree/version3 disabled), static LAME/zlib, phaselimiter and its dependencies, then packages and tests the result. The backend is pinned to `feature/win_build`'s revision in `audio-sources.json`, not to its moving branch tip. Dependency source downloads and the backend's IPP downloads are checksum verified.
+`.github/workflows/build.yml` is the executable reference for the four native environments. It builds LGPL FFmpeg (GPL/nonfree/version3 disabled), static LAME/zlib, phaselimiter and its dependencies, then packages and tests the result. The backend is pinned to `master`'s revision in `audio-sources.json`, not to its moving branch tip. The `branch` field records provenance in `BUILD-INFO.json`; checkout and build validation use only the fixed `revision`. Dependency source downloads and the backend's IPP downloads are checksum verified.
 
 Use Python 3.12, CMake 3.27.9, Ninja 1.13.0, the pinned Rust toolchain, and a native C/C++ toolchain. Linux additionally needs NASM, pkg-config, patchelf and the GUI's X11/Wayland development packages. Mac uses Apple Clang and the official installed Xcode SDK, plus NASM/pkg-config. Windows uses the VS 2022 x64 developer environment for the backend, and MSYS2 MINGW64 GCC/make/NASM/pkgconf for FFmpeg. Do not build the MSVC backend from the MinGW shell.
 

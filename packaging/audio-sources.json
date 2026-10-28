@@ -1,8 +1,8 @@
 {
   "backend": {
     "repository": "ai-mastering/phaselimiter",
-    "revision": "14b502781cd545a01a7c5d1895edbfbfff3f8b1d",
-    "branch": "feature/win_build"
+    "revision": "fce6f4efd5de1e85598ba16411ea20cab2ebb965",
+    "branch": "master"
   },
   "sources": {
     "boost": {
